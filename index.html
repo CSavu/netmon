@@ -230,14 +230,14 @@
   <section class="charts" id="charts">
     <div class="card wide">
       <div class="chart-title"><h2>Slowest reply (ms)</h2>
-        <div class="legend"><span><i style="background:var(--router)"></i>Digi router</span>
-          <span><i style="background:var(--net)"></i>Internet (1.1.1.1, 8.8.8.8)</span>
+        <div class="legend"><span><i style="background:var(--router)"></i>Router</span>
+          <span><i style="background:var(--net)"></i>Internet</span>
           <span>Ticks along the top: lost pings</span></div></div>
       <div id="c-reply"></div>
     </div>
     <div class="card wide">
       <div class="chart-title"><h2>Pings lost (%)</h2>
-        <div class="legend"><span><i style="background:var(--router)"></i>Digi router</span>
+        <div class="legend"><span><i style="background:var(--router)"></i>Router</span>
           <span><i style="background:var(--net)"></i>Internet</span>
           <span><i class="swatch" style="background:var(--band)"></i>Problem minutes</span>
           <span><i class="swatch" style="background:var(--idle)"></i>Not measured, or a marked restart</span></div></div>
@@ -263,10 +263,10 @@
       <span id="slow">150</span> ms or more. These thresholds are this monitor's own, not an industry standard.
       <b>With lost pings</b> leaves out the minutes where the router was only slow.</p>
     <p><b>Not counted:</b> stretches under 3 minutes, the first and last minute of each stretch (including the minute
-      running now), minutes when the Asus lost a ping, and marked router restarts.
+      running now), minutes when a box between this computer and the router lost a ping, and marked router restarts.
       Wi-Fi stays separate from cable, because lost pings on Wi-Fi can come from the radio link.</p>
-    <p><b>Measuring:</b> one ping about every 0,55 s per address (no reply in 1 s = lost), one HTTPS connection test and one
-      DNS lookup about every second (2 s limit), Wi-Fi signal every 5 s. All from this laptop, only while it's awake.</p>
+    <p><b>Measuring:</b> about two pings a second per address (no reply in 1 s = lost), one HTTPS connection test and one
+      DNS lookup about every second (2 s limit), Wi-Fi signal every 5 s. All from this computer, only while it's awake.</p>
   </footer>
 
   <section class="card" id="reportCommands"></section>
@@ -309,13 +309,16 @@
 const REPORT = window.__REPORT__ || null;
 if (REPORT) document.documentElement.classList.add("report");
 const $ = id => document.getElementById(id);
-const nf = (v, d = 0) => v == null ? "—" : new Intl.NumberFormat("ro-RO", { maximumFractionDigits: d, minimumFractionDigits: d }).format(v);
+let locale;  // from data\\settings.json; none means the browser's
+const memo = {};
+const once = (key, make) => memo[key + locale] ??= make();
+const nf = (v, d = 0) => v == null ? "—" : new Intl.NumberFormat(locale, { maximumFractionDigits: d, minimumFractionDigits: d }).format(v);
 const pad = n => String(n).padStart(2, "0");
 const hm = t => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const hms = t => { const d = new Date(t); return `${hm(t)}:${pad(d.getSeconds())}`; };
-const hmsm = t => `${hms(t)},${String(new Date(t).getMilliseconds()).padStart(3, "0")}`;
-const dmy = t => { const d = new Date(t); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`; };
-const dmyy = t => `${dmy(t)}.${new Date(t).getFullYear()}`;
+const hmsm = t => `${hms(t)}${once("dec", () => nf(1.5, 1)[1])}${String(new Date(t).getMilliseconds()).padStart(3, "0")}`;
+const dmy = t => once("dm", () => new Intl.DateTimeFormat(locale, { day: "2-digit", month: "2-digit" })).format(t);
+const dmyy = t => once("dmy", () => new Intl.DateTimeFormat(locale, { day: "2-digit", month: "2-digit", year: "numeric" })).format(t);
 const pct = (a, b, d = 2) => b ? `${nf(100 * a / b, d)}%` : "—";
 const dur = s => s < 60 ? `${nf(s)} s` : `${Math.floor(s / 60)} min ${pad(Math.round(s % 60))} s`;
 const sameDay = (a, b) => dmyy(a) === dmyy(b);
@@ -658,12 +661,12 @@ function renderLive() {
   document.title = `${icons[s.status.level]} ${s.status.title}`;
   $("updated").textContent = `Updated ${hms(s.now)}`;
   const c = s.connection;
-  $("link").textContent = c.kind ? (c.address ? `${c.kind}, ${c.address}` : c.kind) : "Not on the home network";
+  $("link").textContent = c.kind ? (c.address ? `${c.kind}, ${c.address}` : c.kind) : "Not on the router's network";
 
   const t = s.tiles;
   const wifiLabel = c.kind === "Cable" ? "No Wi-Fi: on the cable" : c.channel ? `Channel ${c.channel}, ${c.rx ?? "—"}/${c.tx ?? "—"} Mbps` : "No Wi-Fi reading";
   $("tiles").replaceChildren(
-    tile("Digi router, reply", nf(t.router), "ms", `Lost ${nf(t.routerLost5m)} in 5 min`),
+    tile("Router, reply", nf(t.router), "ms", `Lost ${nf(t.routerLost5m)} in 5 min`),
     tile("Internet, reply", nf(t.net), "ms", `Lost ${nf(t.netLost5m)} in 5 min`),
     tile("HTTPS connection", nf(t.https), "ms", `Failed ${nf(t.httpsFail5m)} in 5 min`),
     tile("DNS lookup", nf(t.dns), "ms", `Failed ${nf(t.dnsFail5m)} in 5 min`),
@@ -689,7 +692,7 @@ function renderRange() {
       `${nf(i.routerLost)} of ${nf(i.routerSent)}`, `${nf(i.netLost)} of ${nf(i.netSent)}`, `${nf(i.worst)} ms`]), [1],
     "No problem minutes in this range.");
   fillTable("t-days", ["Day", "Minutes counted", "With problems", "With lost pings", "Router pings lost", "Internet pings lost"],
-    s.days.map(d => [d.day.split("-").reverse().join("."), nf(d.counted),
+    s.days.map(d => [dmyy(new Date(`${d.day}T00:00`)), nf(d.counted),
       `${nf(d.problem)} (${pct(d.problem, d.counted, 0)})`, `${nf(d.withLoss)} (${pct(d.withLoss, d.counted, 0)})`,
       `${nf(d.routerLost)} of ${nf(d.routerSent)} (${pct(d.routerLost, d.routerSent)})`,
       `${nf(d.netLost)} of ${nf(d.netSent)} (${pct(d.netLost, d.netSent)})`]));
@@ -747,7 +750,7 @@ async function refresh(force) {
     }
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
-    if (data.ready && data.key === viewKey(view)) { state = data; render(false); }
+    if (data.ready && data.key === viewKey(view)) { state = data; locale = data.locale || undefined; render(false); }
     else if (!data.ready) $("detail").textContent = "Reading the monitors' history, a few seconds.";
   } catch {
     // keep the last picture on screen, but say clearly that it is old
@@ -899,7 +902,7 @@ async function downloadPdf() {
 
 function renderReport() {
   const s = state, rep = s.report, r = s.range;
-  $("reportRange").textContent = `${dmyy(r.from)} ${hms(r.from)} – ${dmyy(r.to)} ${hms(r.to)} (${spanText(r.to - r.from)}). Generated ${dmyy(rep.generated)} ${hms(rep.generated)}. Measured from this laptop, only while it was awake.`;
+  $("reportRange").textContent = `${dmyy(r.from)} ${hms(r.from)} – ${dmyy(r.to)} ${hms(r.to)} (${spanText(r.to - r.from)}). Generated ${dmyy(rep.generated)} ${hms(rep.generated)}. Measured from this computer, only while it was awake.`;
   $("reportSetups").replaceChildren(...(s.periods.length ? s.periods.map(p => node("li", "",
     `${p.label}: ${nf(p.problem)} of ${nf(p.counted)} minutes counted had problems (${pct(p.problem, p.counted, 0)}). ` +
     `Router lost ${nf(p.routerLost)} of ${nf(p.routerSent)} pings, internet ${nf(p.netLost)} of ${nf(p.netSent)}. ` +
@@ -939,6 +942,7 @@ function renderReport() {
 
 if (REPORT) {
   state = REPORT;
+  locale = REPORT.locale || undefined;
   renderReport();
 } else {
   document.querySelectorAll("[data-window]").forEach(b => b.addEventListener("click", () => goTo({ window: b.dataset.window })));

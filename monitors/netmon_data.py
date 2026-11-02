@@ -1,38 +1,65 @@
-"""Loads the two monitor logs into per-minute facts the Digi evidence pack is built from.
+"""Loads the monitor logs into per-minute facts, by the rules every number on the dashboard follows.
 
-netmon.csv: one row per ping (router 192.168.1.1, Asus 192.168.1.5, 1.1.1.1, 8.8.8.8). Rows written before
-2026-10-19 22:24 carry the time of day only and start on 2026-10-17; a step BACK of more than an hour is the next
-day (a small step back is the clock being corrected). diag.csv: one row a second from 2026-10-19 21:08 with the
-router ping, an HTTPS connect to 1.1.1.1 and 8.8.8.8, and a DNS lookup (-1 = no answer).
+What is specific to one home lives in data/settings.json (see the README), never here.
+
+netmon.csv: one row per ping (the router, any box in between, the internet hosts). A row carrying the time of day only
+(an early log format) starts on first_day; a step BACK of more than an hour is the next day (a small step back is the
+clock being corrected). diag.csv: one row a second with the router ping, an HTTPS connect to each internet host, and a
+DNS lookup (-1 = no answer).
 
 The monitors log only while the PC is awake. A session is a run of rows without a gap over 60 s. Excluded as the
 PC's own doing: sessions under 3 minutes, the first and last minute of every session (waking up, going to sleep),
-and any minute in which the Asus, the box between the PC and the Digi router, lost a ping.
+and any minute in which BOX, a box between the PC and the router, lost a ping.
 
-From DIRECT_SINCE the PC is plugged straight into the Digi router and the Asus is off: its rows are dropped, so a
-lost router ping can no longer be blamed on anything between the two.
+From BOX_REMOVED the box is out of the path: its rows are dropped, so a lost router ping can no longer be blamed on
+anything between the PC and the router.
 
 In WIFI_SPANS the PC reached the router over Wi-Fi, whose own losses say nothing about the router or the line: those
 rows are left out by default and read only with wifi=True. An open span (None) runs until the setup changes again.
 link.ps1 logs the link every 5 s, so the spans follow data/link.csv by themselves; HAND_MARKED_WIFI is the time before
-that log began. It can tell cable from Wi-Fi, not what the cable plugs into: DIRECT_SINCE stays marked by hand.
+that log began. It can tell cable from Wi-Fi, not what the cable plugs into: BOX_REMOVED stays marked by hand.
 
 ROUTER_RESTARTS are reboots done on purpose: those minutes count as the household's doing, never as a drop.
 """
 import csv
+import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 DATA = Path(__file__).parent.parent / "data"
-ROUTER, ASUS, NET = "192.168.1.1", "192.168.1.5", ("1.1.1.1", "8.8.8.8")
-FIRST_DAY = date(2026, 10, 17)
 SESSION_GAP = timedelta(seconds=60)
 SLOW_MS = 150
-DIRECT_SINCE = datetime(2026, 11, 2)
-HAND_MARKED_WIFI = [(datetime(2026, 11, 2, 13, 35, 34), None)]
-ROUTER_RESTARTS = [(datetime(2026, 11, 2, 17, 52), datetime(2026, 11, 2, 17, 57))]
+
+
+def load_settings(path=DATA / "settings.json"):
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _when(text):
+    return datetime.fromisoformat(text) if text else None
+
+
+SETTINGS = load_settings()
+ROUTER = SETTINGS.get("router", "192.168.1.1")
+NET = tuple(SETTINGS.get("internet", ("1.1.1.1", "8.8.8.8")))
+FIRST_DAY = date.fromisoformat(SETTINGS["first_day"]) if SETTINGS.get("first_day") else date.today()
+_box = SETTINGS.get("box") or {}
+BOX, BOX_NAME, BOX_REMOVED = _box.get("address"), _box.get("name", "box"), _when(_box.get("removed"))
+HAND_MARKED_WIFI = [(_when(a), _when(b)) for a, b in SETTINGS.get("wifi_before_link_log", [])]
+ROUTER_RESTARTS = [(_when(a), _when(b)) for a, b in SETTINGS.get("restarts", [])]
+
+
+def box_gone(ts):
+    return BOX_REMOVED is not None and ts >= BOX_REMOVED
+
+
+def box_in_path(ts):
+    return BOX is not None and not box_gone(ts)
 
 
 def _ts(text, day, prev):
@@ -103,7 +130,7 @@ def load_pings(path=DATA / "netmon.csv", wifi=False):
             continue
         day = new_day or ts.date()
         prev = ts
-        if (r["target"] == ASUS and ts >= DIRECT_SINCE) or on_wifi(ts) != wifi:
+        if (r["target"] == BOX and box_gone(ts)) or on_wifi(ts) != wifi:
             continue
         rows.append((ts, r["target"], r["ok"] == "True", int(r["ms"])))
     return rows
@@ -115,9 +142,9 @@ def load_diag(path=DATA / "diag.csv", wifi=False):
         try:
             ts = datetime.strptime(r["time"], "%Y-%m-%d %H:%M:%S.%f")
             if on_wifi(ts) == wifi:
-                out.append((ts, int(r["router_ping_ms"]), int(r["tcp_1111_ms"]), int(r["tcp_8888_ms"]),
+                out.append((ts, int(r["router_ping_ms"]), int(r.get("tcp_1_ms", r.get("tcp_1111_ms"))), int(r.get("tcp_2_ms", r.get("tcp_8888_ms"))),
                             int(r["dns_ms"]), r["link"]))
-        except (KeyError, ValueError):
+        except (KeyError, TypeError, ValueError):
             continue
     return out
 
@@ -126,10 +153,10 @@ def load_diag(path=DATA / "diag.csv", wifi=False):
 class Minute:
     start: datetime
     session: int
-    n: dict = field(default_factory=lambda: {"router": 0, "asus": 0, "net": 0})
-    lost: dict = field(default_factory=lambda: {"router": 0, "asus": 0, "net": 0})
-    slow: dict = field(default_factory=lambda: {"router": 0, "asus": 0, "net": 0})
-    worst: dict = field(default_factory=lambda: {"router": 0, "asus": 0, "net": 0})
+    n: dict = field(default_factory=lambda: {"router": 0, "box": 0, "net": 0})
+    lost: dict = field(default_factory=lambda: {"router": 0, "box": 0, "net": 0})
+    slow: dict = field(default_factory=lambda: {"router": 0, "box": 0, "net": 0})
+    worst: dict = field(default_factory=lambda: {"router": 0, "box": 0, "net": 0})
     excluded: bool = False
 
     def loss(self, g):
@@ -141,7 +168,7 @@ class Minute:
 
 
 def group(target):
-    return "router" if target == ROUTER else "asus" if target == ASUS else "net"
+    return "router" if target == ROUTER else "box" if target == BOX else "net"
 
 
 def extend_sessions(spans, ts):
@@ -176,7 +203,7 @@ def mark_excluded(mins, spans):
     """Sets Minute.excluded from scratch; safe to call again as a live log grows."""
     short = {si for si, (a, b) in enumerate(spans) if b - a < timedelta(minutes=3)}
     for m in mins.values():
-        m.excluded = (m.session in short or m.lost["asus"] > 0
+        m.excluded = (m.session in short or m.lost["box"] > 0
                       or any(a <= m.start < b for a, b in ROUTER_RESTARTS))
     for a, b in spans:
         for key in (a.replace(second=0, microsecond=0), b.replace(second=0, microsecond=0)):

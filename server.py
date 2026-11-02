@@ -1,8 +1,8 @@
 """Live dashboard over the connection monitors' logs. Python standard library only.
 
 Reads netmon.csv, diag.csv and wifi.csv as they grow and serves one page on 127.0.0.1. It never writes to those logs.
-link.csv says which link the laptop is on; a change of link means reading the logs again, as it moves rows between setups.
-PDF reports are printed by the Chrome or Edge already installed on this laptop.
+link.csv says which link the computer is on; a change of link means reading the logs again, as it moves rows between setups.
+PDF reports are printed by the Chrome or Edge already installed on this computer.
 
 Every rule about what counts as a problem comes from the monitors' own netmon_data.py (loaded from monitors/ and
 loaded again when that file changes), so these numbers are the ones that go in the evidence pack.
@@ -44,10 +44,9 @@ PDF_TIMEOUT_SECONDS = 300
 
 KINDS = {
     "ping": {"label": "Ping", "command": "Ping.Send('{target}', 1000)", "script": "netmon.ps1",
-             "every": "about every 0,55 s per address",
-             "note": "Same as: ping -n 1 -w 1000 <address>. Addresses: the Digi router, 1.1.1.1, 8.8.8.8 "
-                     "(and the Asus, 192.168.1.5, until 2 November)."},
-    "diag_ping": {"label": "Router ping", "command": "Ping.Send('192.168.1.1', 1000)", "script": "diag.ps1",
+             "every": "about twice a second per address",
+             "note": "Same as: ping -n 1 -w 1000 <address>. Addresses: the router and the internet hosts in data\\settings.json."},
+    "diag_ping": {"label": "Router ping", "command": "Ping.Send('{router}', 1000)", "script": "diag.ps1",
                   "every": "about every second", "note": "A second ping to the router, beside each connection test."},
     "tcp": {"label": "HTTPS connection", "command": "TcpClient.ConnectAsync('{target}', 443).Wait(2000)",
             "script": "diag.ps1", "every": "about every second",
@@ -55,16 +54,14 @@ KINDS = {
     "dns": {"label": "DNS lookup", "command": "Dns.GetHostAddressesAsync('r<random>.example.com').Wait(2000)",
             "script": "diag.ps1", "every": "about every second",
             "note": "A new random name each time, so the PC's cache can't answer. \"No such name\" counts as an answer."},
-    "adapter": {"label": "Network link", "command": "Get-NetAdapter -Name Ethernet,Wi-Fi", "script": "diag.ps1",
-                "every": "about every second", "note": "Until 2 November it read the Ethernet adapter only. Failed here means the link read as down."},
+    "adapter": {"label": "Network link", "command": "Get-NetAdapter -Physical", "script": "diag.ps1",
+                "every": "about every second", "note": "Failed here means no physical adapter was connected."},
     "wifi": {"label": "Wi-Fi status", "command": "netsh wlan show interfaces", "script": "wifi.ps1",
-             "every": "every 5 s", "note": "Since 2 November. Failed here means Wi-Fi was not connected."},
-    "tracert": {"label": "Traceroute", "command": "tracert -d -h 6 -w 500 8.8.8.8", "script": "diag.ps1",
-                "every": "during outages, at most once a minute", "note": "Runs when both HTTPS tests fail, so every one counts as failed. Since 19 October."},
-    "ipconfig": {"label": "ipconfig", "command": "ipconfig", "script": "server.py (this dashboard)",
-                 "every": "every 10 s", "note": "Found which link the laptop was on, for a few hours on 2 November, until link.ps1 took over."},
-    "link": {"label": "Link check", "command": "Find-NetRoute -RemoteIPAddress 192.168.1.1", "script": "link.ps1",
-             "every": "every 5 s", "note": "Which link reaches the router, read with Get-NetAdapter. Since 2 November. Failed here means no route to the router."},
+             "every": "every 5 s", "note": "Failed here means Wi-Fi was not connected."},
+    "tracert": {"label": "Traceroute", "command": "tracert -d -h 6 -w 500 {host}", "script": "diag.ps1",
+                "every": "during outages, at most once a minute", "note": "Runs when both HTTPS tests fail, so every one counts as failed."},
+    "link": {"label": "Link check", "command": "Find-NetRoute -RemoteIPAddress {router}", "script": "link.ps1",
+             "every": "every 5 s", "note": "Which link reaches the router, read with Get-NetAdapter. Failed here means no route to the router."},
 }
 
 log = logging.getLogger("netmon-dashboard")
@@ -189,7 +186,7 @@ class LogTail:
 
 
 def parse_ping(line, nd, day, prev):
-    """(ts, target, ok, ms), day. Rows written before 19 October carry the time of day only."""
+    """(ts, target, ok, ms), day. Rows of an early log format carry the time of day only."""
     c = line.split(",")
     if len(c) != 4 or c[2] not in ("True", "False"):
         return None, day
@@ -225,14 +222,6 @@ def parse_link(line):
         return None
 
 
-def parse_ipconfig(line):
-    c = line.split(",", 1)
-    try:
-        return datetime.fromisoformat(c[0]), c[1]
-    except (IndexError, ValueError):
-        return None
-
-
 class LogFile:
     def __init__(self, path):
         self.path, self.tail, self.count = path, LogTail(path), 0
@@ -254,7 +243,7 @@ class Store:
         self.ready = False
         self.files = {
             "netmon": LogFile(DATA_DIR / "netmon.csv"), "diag": LogFile(DATA_DIR / "diag.csv"),
-            "wifi": LogFile(DATA_DIR / "wifi.csv"), "ipconfig": LogFile(DATA_DIR / "commands.csv"),
+            "wifi": LogFile(DATA_DIR / "wifi.csv"),
             "link": LogFile(DATA_DIR / "link.csv"),
         }
         self.counts = {}  # minute -> Counter of commands run, "<kind>!" for the failed ones
@@ -280,11 +269,6 @@ class Store:
                 self._diag(offset, line)
             for offset, line in new["wifi"]:
                 self._radio(offset, line)
-            for offset, line in new["ipconfig"]:
-                row = parse_ipconfig(line)
-                if row:
-                    self.files["ipconfig"].mark(row[0], offset)
-                    self._count(row[0], "ipconfig")
             for offset, line in new["link"]:
                 self._link(offset, line)
             self._read_traces()
@@ -301,10 +285,10 @@ class Store:
         self._day, self._prev = new_day, ts
         self.first = self.first or ts
         self._count(ts, "ping", not ok)
-        if target == self.nd.ASUS and ts >= self.nd.DIRECT_SINCE:
+        if target == self.nd.BOX and self.nd.box_gone(ts):
             return
         (self.wifi if self.nd.on_wifi(ts) else self.wired).feed(ts, target, ok, ms)
-        if target != self.nd.ASUS:
+        if target != self.nd.BOX:
             self.pings.append(row)
 
     def _diag(self, offset, line):
@@ -379,7 +363,7 @@ class Store:
             if not f.times:
                 return
             offset, day, prev = f.marks[max(bisect.bisect_right(f.times, a) - 1, 0)]
-        parse = {"diag": parse_diag, "wifi": parse_radio, "ipconfig": parse_ipconfig, "link": parse_link}.get(name)
+        parse = {"diag": parse_diag, "wifi": parse_radio, "link": parse_link}.get(name)
         day = day or self.nd.FIRST_DAY
         try:
             with open(f.path, "rb") as fh:
@@ -451,12 +435,12 @@ def status_of(store, now, nd):
     if len(n10) >= 3 and not any(r[2] for r in n10):
         if r10 and not any(r[2] for r in r10):
             return {"level": "critical", "title": "No internet, router not answering",
-                    "detail": "The Digi router and the internet have stopped answering this laptop."}
+                    "detail": "The router and the internet have stopped answering this computer."}
         return {"level": "critical", "title": "No internet, router answering",
-                "detail": "The router answers this laptop, but nothing gets through to the internet."}
+                "detail": "The router answers this computer, but nothing gets through to the internet."}
     if r10 and not any(r[2] for r in r10):
         return {"level": "serious", "title": "Router not answering",
-                "detail": "The Digi router has stopped answering this laptop, the internet still does."}
+                "detail": "The router has stopped answering this computer, the internet still does."}
     lost_r = sum(1 for r in tail if r[1] == nd.ROUTER and not r[2])
     lost_n = sum(1 for r in tail if r[1] != nd.ROUTER and not r[2])
     slow = sum(1 for r in tail if r[1] == nd.ROUTER and r[2] and r[3] >= nd.SLOW_MS)
@@ -515,7 +499,7 @@ def series(store, start, end):
         diag = [r for r in store.diag if start <= r[0] < end] if covered else store.read_between("diag", start, end)
         radio = [r for r in store.radio if start <= r[0] < end] if covered else store.read_between("wifi", start, end)
         for ts, target, ok, ms in pings:
-            if target == nd.ASUS:
+            if target == nd.BOX:
                 continue
             i = index(ts)
             if 0 <= i < count:
@@ -557,7 +541,7 @@ def incidents_of(store, start, end):
             if b <= start or a >= end:
                 continue
             agg = lambda g, f: sum(getattr(m, f)[g] for m in inc)
-            setup = "Wi-Fi" if name == "wifi" else ("Via Asus" if a < nd.DIRECT_SINCE else "Cable, direct")
+            setup = "Wi-Fi" if name == "wifi" else (f"Via {nd.BOX_NAME}" if nd.box_in_path(a) else "Cable")
             out.append({
                 "start": ms_of(a), "end": ms_of(b), "setup": setup, "minutes": len(inc),
                 "routerLost": agg("router", "lost"), "routerSent": agg("router", "n"),
@@ -599,14 +583,16 @@ def periods_of(store, start, end):
         if ms:
             rows.append({"label": label, "from": ms_of(ms[0].start), "to": ms_of(ms[-1].start) + 60000, **summary(ms, os_)})
 
-    add("Via Asus router, cable", wired, w_out, None, nd.DIRECT_SINCE)
+    via_box, gone = f"Via {nd.BOX_NAME}, cable", nd.BOX_REMOVED
+    if nd.BOX and gone:
+        add(via_box, wired, w_out, None, gone)
+    cable = via_box if nd.BOX and not gone else "Cable"
     restarts = sorted(b for _, b in nd.ROUTER_RESTARTS)
-    for a, b in zip([nd.DIRECT_SINCE] + restarts, restarts + [None]):
-        add("Cable, straight to Digi" + ("" if a == nd.DIRECT_SINCE else f", after restart {a:%d.%m %H:%M}"),
-            wired, w_out, a, b)
+    for a, b in zip([gone] + restarts, restarts + [None]):
+        add(cable + ("" if a == gone else f", after restart {a:%Y-%m-%d %H:%M}"), wired, w_out, a, b)
     first = min((a for a, _ in nd.WIFI_SPANS), default=None)
     for a, b in [(first, restarts[0] if restarts else None)] + list(zip(restarts, restarts[1:] + [None])):
-        add("Wi-Fi, Digi router" + ("" if a == first else f", after restart {a:%d.%m %H:%M}"), wifi, f_out, a, b)
+        add("Wi-Fi" + ("" if a == first else f", after restart {a:%Y-%m-%d %H:%M}"), wifi, f_out, a, b)
     return rows
 
 
@@ -627,7 +613,8 @@ def days_of(store, start, end):
 
 def markers_of(nd, start, end):
     found = [(a, "Router restart") for a, _ in nd.ROUTER_RESTARTS]
-    found += [(nd.DIRECT_SINCE, "Asus off")]
+    if nd.BOX and nd.BOX_REMOVED:
+        found += [(nd.BOX_REMOVED, f"{nd.BOX_NAME} off")]
     found += [(a, "To Wi-Fi") for a, _ in nd.WIFI_SPANS] + [(b, "To cable") for _, b in nd.WIFI_SPANS if b]
     return [{"t": ms_of(t), "label": lbl} for t, lbl in sorted(found) if start <= t <= end]
 
@@ -668,43 +655,39 @@ def _reply(ms, limit="1 s"):
     return f"{ms} ms" if ms >= 0 else f"no answer in {limit}"
 
 
-def _ping_rows(row):
+def _ping_rows(row, nd):
     ts, target, ok, ms = row
     return [{"t": ms_of(ts), "kind": "ping", "cmd": KINDS["ping"]["command"].format(target=target),
              "result": f"{ms} ms" if ok else "no reply in 1 s", "ok": ok}]
 
 
-def _diag_rows(row):
+def _diag_rows(row, nd):
     ts, router, h1, h2, dns, link = row
     t = ms_of(ts)
     return [
-        {"t": t, "kind": "diag_ping", "cmd": KINDS["diag_ping"]["command"], "result": _reply(router), "ok": router >= 0},
-        {"t": t, "kind": "tcp", "cmd": KINDS["tcp"]["command"].format(target="1.1.1.1"), "result": _reply(h1, "2 s"), "ok": h1 >= 0},
-        {"t": t, "kind": "tcp", "cmd": KINDS["tcp"]["command"].format(target="8.8.8.8"), "result": _reply(h2, "2 s"), "ok": h2 >= 0},
+        {"t": t, "kind": "diag_ping", "cmd": KINDS["diag_ping"]["command"].format(router=nd.ROUTER), "result": _reply(router), "ok": router >= 0},
+        {"t": t, "kind": "tcp", "cmd": KINDS["tcp"]["command"].format(target=nd.NET[0]), "result": _reply(h1, "2 s"), "ok": h1 >= 0},
+        {"t": t, "kind": "tcp", "cmd": KINDS["tcp"]["command"].format(target=nd.NET[-1]), "result": _reply(h2, "2 s"), "ok": h2 >= 0},
         {"t": t, "kind": "dns", "cmd": KINDS["dns"]["command"], "result": _reply(dns, "2 s"), "ok": dns >= 0},
         {"t": t, "kind": "adapter", "cmd": KINDS["adapter"]["command"], "result": f"Link: {link}", "ok": link == "Up"},
     ]
 
 
-def _wifi_rows(row):
+def _wifi_rows(row, nd):
     ts, state, _bssid, channel, signal, _rssi, rx, tx = row
     text = f"{state}, signal {signal}%, channel {channel}, {rx}/{tx} Mbps" if state == "connected" else (state or "no reading")
     return [{"t": ms_of(ts), "kind": "wifi", "cmd": KINDS["wifi"]["command"], "result": text, "ok": state == "connected"}]
 
 
-def _link_rows(row):
+def _link_rows(row, nd):
     ts, link, address = row
     text = f"{link}, {address}" if address else "no route to the router"
-    return [{"t": ms_of(ts), "kind": "link", "cmd": KINDS["link"]["command"], "result": text, "ok": link != "none"}]
+    return [{"t": ms_of(ts), "kind": "link", "cmd": KINDS["link"]["command"].format(router=nd.ROUTER), "result": text, "ok": link != "none"}]
 
 
-def _ipconfig_rows(row):
-    return [{"t": ms_of(row[0]), "kind": "ipconfig", "cmd": "ipconfig", "result": row[1], "ok": True}]
-
-
-EXPAND = {"netmon": _ping_rows, "diag": _diag_rows, "wifi": _wifi_rows, "ipconfig": _ipconfig_rows, "link": _link_rows}
+EXPAND = {"netmon": _ping_rows, "diag": _diag_rows, "wifi": _wifi_rows, "link": _link_rows}
 LOG_OF_KIND = {"ping": "netmon", "diag_ping": "diag", "tcp": "diag", "dns": "diag", "adapter": "diag",
-               "wifi": "wifi", "ipconfig": "ipconfig", "link": "link"}
+               "wifi": "wifi", "link": "link"}
 
 
 def command_counts(store, start, end):
@@ -725,13 +708,13 @@ def commands_between(store, a, b, kinds=None, failed=False):
     rows = []
     for name in {LOG_OF_KIND[k] for k in kinds if k in LOG_OF_KIND}:
         for row in store.read_between(name, a, b):
-            for c in EXPAND[name](row):
+            for c in EXPAND[name](row, store.nd):
                 if c["kind"] in kinds and (not failed or not c["ok"]):
                     rows.append(c)
     if "tracert" in kinds:
         for t in store.traces:
             if a <= t["t"] < b:
-                rows.append({"t": ms_of(t["t"]), "kind": "tracert", "cmd": KINDS["tracert"]["command"],
+                rows.append({"t": ms_of(t["t"]), "kind": "tracert", "cmd": KINDS["tracert"]["command"].format(host=store.nd.NET[-1]),
                              "result": f"internet down, router ping {_reply(t['router'])}", "ok": False, "output": t["output"]})
     rows.sort(key=lambda c: c["t"])
     return rows
@@ -772,8 +755,10 @@ def commands_page(store, start, end, before=None, limit=200, kinds=None, failed=
     return rows, next_before
 
 
-def definitions():
-    return [{"kind": k, **v} for k, v in KINDS.items()]
+def definitions(nd):
+    def filled(command):
+        return command.replace("{router}", nd.ROUTER).replace("{host}", nd.NET[-1])
+    return [{"kind": k, **v, "command": filled(v["command"])} for k, v in KINDS.items()]
 
 
 # ---------------------------------------------------------------- the report and the PDF
@@ -789,7 +774,7 @@ def find_browser():
 
 
 def request_allowed_to_act(headers):
-    """Another website open in the browser must not be able to start an export on this laptop."""
+    """Another website open in the browser must not be able to start an export on this computer."""
     return (headers.get("Sec-Fetch-Site") or "none") in ("none", "same-origin")
 
 
@@ -836,6 +821,12 @@ def parse_range(query, store, now):
     return now - timedelta(seconds=PRESETS[window]), now, window, True
 
 
+def rules_mtime():
+    """Changes when netmon_data.py or data/settings.json does."""
+    settings = DATA_DIR / "settings.json"
+    return (MONITORS_DIR / "netmon_data.py").stat().st_mtime, settings.stat().st_mtime if settings.exists() else None
+
+
 class App:
     def __init__(self):
         self.store = None
@@ -853,9 +844,8 @@ class App:
     def run_reader(self):
         while True:
             try:
-                rules = MONITORS_DIR / "netmon_data.py"
-                mtime = rules.stat().st_mtime
-                # a setup or a restart was marked, or the link changed: read everything again
+                mtime = rules_mtime()
+                # the rules or the settings changed, or the link did: read everything again
                 if mtime != self._rules_mtime or self.store.rules_outdated:
                     self._rules_mtime = mtime
                     store = Store()
@@ -898,7 +888,8 @@ class App:
             if radio and kind != "Cable":
                 connection.update(state=radio[1], channel=radio[3], signal=radio[4], rssi=radio[5], rx=radio[6], tx=radio[7])
             return {"status": status_of(store, now, nd), "connection": connection, "tiles": tiles_of(store, now, nd),
-                    "firstLog": ms_of(store.first) if store.first else None, "slowMs": nd.SLOW_MS}
+                    "firstLog": ms_of(store.first) if store.first else None, "slowMs": nd.SLOW_MS,
+                    "locale": nd.SETTINGS.get("locale")}
 
     def range_part(self, store, start, end):
         nd = store.nd
@@ -916,7 +907,7 @@ class App:
                 "days": days_of(store, start, end),
                 "commands": {"counts": counts, "total": sum(c["n"] for c in counts.values()),
                              "failed": sum(c["failed"] for c in counts.values()), "listLimit": REPORT_ALL_LIMIT,
-                             "definitions": definitions()},
+                             "definitions": definitions(nd)},
             }
 
     def report_html(self, query):

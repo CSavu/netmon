@@ -2,6 +2,7 @@
 
 Feeds a fixed copy of the logs through the row-by-row Track and compares it with netmon_data's whole-file functions.
 """
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -45,8 +46,8 @@ def rows_for(nd, start, pattern):
     for i in range(600):
         ts = start + timedelta(seconds=i)
         r, n = pattern(i)
-        out += [(ts, nd.ROUTER, r, 1 if r else 0), (ts + timedelta(milliseconds=100), "1.1.1.1", n, 10 if n else 0),
-                (ts + timedelta(milliseconds=200), "8.8.8.8", n, 20 if n else 0)]
+        out += [(ts, nd.ROUTER, r, 1 if r else 0), (ts + timedelta(milliseconds=100), nd.NET[0], n, 10 if n else 0),
+                (ts + timedelta(milliseconds=200), nd.NET[1], n, 20 if n else 0)]
     return out
 
 
@@ -91,7 +92,7 @@ def test_status_words(nd):
         store.pings = deque()
         for i in range(30):
             ts = now - timedelta(seconds=30 - i)
-            store.pings.extend([(ts, nd.ROUTER, router_ok, 1), (ts, "1.1.1.1", net_ok, 10), (ts, "8.8.8.8", net_ok, 20)])
+            store.pings.extend([(ts, nd.ROUTER, router_ok, 1), (ts, nd.NET[0], net_ok, 10), (ts, nd.NET[1], net_ok, 20)])
     fill(True, True)
     assert server.status_of(store, now, nd)["level"] == "good"
     fill(True, False)
@@ -117,7 +118,7 @@ def store(tmp_path, monkeypatch, nd):
     pings = ["time,target,ok,ms"]
     diag = ["time,router_ping_ms,tcp_1111_ms,tcp_8888_ms,dns_ms,link"]
     wifi = ["time,state,bssid,channel,signal_pct,rssi,rx_mbps,tx_mbps"]
-    ipconfig = []
+    links = ["time,link,address"]
     for i in range(1800):
         ts = T0 + timedelta(seconds=i)
         stamp = ts.isoformat(sep=" ", timespec="milliseconds")
@@ -129,11 +130,11 @@ def store(tmp_path, monkeypatch, nd):
         if i % 5 == 0:
             wifi.append(f"{stamp},connected,aa:bb,6,90,-50,433,433")
         if i % 10 == 0:
-            ipconfig.append(f"{ts.isoformat(timespec='milliseconds')},Wi-Fi, 192.168.1.6")
+            links.append(f"{stamp},Cable,192.168.1.6")
     (tmp_path / "netmon.csv").write_text("\n".join(pings) + "\n", encoding="utf-8")
     (tmp_path / "diag.csv").write_text("\n".join(diag) + "\n", encoding="utf-8")
     (tmp_path / "wifi.csv").write_text("\n".join(wifi) + "\n", encoding="utf-8")
-    (tmp_path / "commands.csv").write_text("\n".join(ipconfig) + "\n", encoding="utf-8")
+    (tmp_path / "link.csv").write_text("\n".join(links) + "\n", encoding="utf-8")
     (tmp_path / "diag_traceroute.txt").write_text(
         "===== 2026-03-01 10:05:00 internet down (router ping: 3 ms) =====\n\nTracing route\n  1  192.168.1.1\n"
         "===== 2026-03-01 10:20:00 internet down (router ping: -1 ms) =====\n  1  *\n", encoding="utf-8")
@@ -147,7 +148,7 @@ def key(c):
 
 
 @pytest.mark.parametrize("name, a, b", [("netmon", 0, 1800), ("netmon", 700, 712), ("diag", 3, 4), ("diag", 1799, 1800),
-                                        ("wifi", 100, 500), ("ipconfig", 0, 95), ("netmon", 1800, 1900)])
+                                        ("wifi", 100, 500), ("link", 0, 95), ("netmon", 1800, 1900)])
 def test_read_between_equals_reading_everything(store, name, a, b):
     start, end = T0 + timedelta(seconds=a), T0 + timedelta(seconds=b)
     everything = list(store.read_between(name, T0 - timedelta(days=1), T0 + timedelta(days=1)))
@@ -300,6 +301,9 @@ def switching(tmp_path, monkeypatch, nd):
         ok = not (at(9, 50) <= ts < at(10, 10))
         pings.append(f"{ts.isoformat(sep=' ', timespec='milliseconds')},192.168.1.1,{ok},{1 if ok else 0}")
     (tmp_path / "data" / "netmon.csv").write_text("\n".join(pings) + "\n", encoding="utf-8")
+    (tmp_path / "data" / "settings.json").write_text(json.dumps({
+        "wifi_before_link_log": [["2026-11-02T13:35:34", None]],
+        "restarts": [["2026-11-02T17:52:00", "2026-11-02T17:57:00"]]}), encoding="utf-8")
     return tmp_path / "data" / "link.csv"
 
 
@@ -322,7 +326,7 @@ def test_plugging_in_the_cable_moves_the_rows_by_itself(switching):
     labels = [m["label"] for m in server.markers_of(store.nd, at(0), at(20))]
     assert labels == ["To cable"]
     assert [p["label"] for p in server.periods_of(store, at(0), at(20))] == [
-        "Cable, straight to Digi, after restart 02.11 17:57", "Wi-Fi, Digi router, after restart 02.11 17:57"]
+        "Cable, after restart 2026-11-02 17:57", "Wi-Fi, after restart 2026-11-02 17:57"]
 
 
 def test_a_switch_while_running_asks_for_the_logs_to_be_read_again(switching):
@@ -363,3 +367,59 @@ def test_link_checks_are_listed_as_commands(switching):
     assert [(c["result"], c["ok"]) for c in rows] == [
         ("Wi-Fi, 192.168.1.6", True), ("none, 192.168.1.6", False), ("Cable, 192.168.1.10", True)]
     assert server.command_counts(store, at(0), at(3))["link"] == {"n": 3, "failed": 1}
+
+
+def test_a_new_install_marks_nothing_and_still_sorts_cable_from_wifi(switching):
+    (switching.parent / "settings.json").unlink()
+    switching.write_text(link_rows([(0, "Wi-Fi"), (10, "Cable")]), encoding="utf-8")
+    store = server.Store()
+    store.poll()
+    nd = store.nd
+    assert (nd.BOX, nd.BOX_REMOVED, nd.HAND_MARKED_WIFI, nd.ROUTER_RESTARTS) == (None, None, [], [])
+    assert nd.WIFI_SPANS == [(at(0), at(10))]
+    assert [p["label"] for p in server.periods_of(store, at(0), at(20))] == ["Cable", "Wi-Fi"]
+    assert [m["label"] for m in server.markers_of(nd, at(0), at(20))] == ["To Wi-Fi", "To cable"]
+
+
+def box_settings(switching, **box):
+    (switching.parent / "settings.json").write_text(json.dumps({
+        "router": "10.0.0.1", "internet": ["9.9.9.9", "8.8.4.4"], "box": {"address": "10.0.0.2", "name": "Mesh", **box}}), encoding="utf-8")
+    pings = ["time,target,ok,ms"]
+    for i in range(600):
+        ts = at(0) + timedelta(seconds=i)
+        stamp = ts.isoformat(sep=" ", timespec="milliseconds")
+        pings += [f"{stamp},10.0.0.1,True,1", f"{stamp},10.0.0.2,{i != 300},1", f"{stamp},9.9.9.9,True,9", f"{stamp},8.8.4.4,True,9"]
+    (switching.parent / "netmon.csv").write_text("\n".join(pings) + "\n", encoding="utf-8")
+    store = server.Store()
+    store.poll()
+    store.wired.settle()
+    return store
+
+
+def test_the_settings_name_the_router_the_hosts_and_a_box(switching):
+    store = box_settings(switching)
+    assert (store.nd.ROUTER, store.nd.NET, store.nd.BOX) == ("10.0.0.1", ("9.9.9.9", "8.8.4.4"), "10.0.0.2")
+    # the minute the box lost a ping is its doing, not the line's
+    assert store.wired.mins[at(5)].excluded and store.wired.mins[at(5)].lost["box"] == 1
+    assert [p["label"] for p in server.periods_of(store, at(0), at(10))] == ["Via Mesh, cable"]
+    commands = {d["kind"]: d["command"] for d in server.definitions(store.nd)}
+    assert commands["diag_ping"] == "Ping.Send('10.0.0.1', 1000)"
+    assert commands["tracert"] == "tracert -d -h 6 -w 500 8.8.4.4"
+    assert commands["link"] == "Find-NetRoute -RemoteIPAddress 10.0.0.1"
+
+
+def test_a_removed_box_splits_the_periods_and_its_rows_stop_counting(switching):
+    store = box_settings(switching, removed=at(5).isoformat())
+    assert not store.wired.mins[at(6)].lost["box"] and not store.wired.mins[at(6)].n["box"]
+    assert [p["label"] for p in server.periods_of(store, at(0), at(10))] == ["Via Mesh, cable", "Cable"]
+    assert [m["label"] for m in server.markers_of(store.nd, at(0), at(10))] == ["Mesh off"]
+
+
+def test_editing_the_settings_counts_as_a_change_of_rules(switching):
+    before = server.rules_mtime()
+    settings = switching.parent / "settings.json"
+    import os
+    os.utime(settings, (1, 1))
+    assert server.rules_mtime() != before
+    settings.unlink()
+    assert server.rules_mtime()[1] is None
