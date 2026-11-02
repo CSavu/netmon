@@ -1,0 +1,986 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connection monitor</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #6f6d68;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10);
+    --router: #2a78d6; --net: #eb6834; --signal: #1baf7a;
+    --band: #f6e6df; --idle: #eeede8; --hover: rgba(11,11,11,.05); --select: rgba(11,11,11,.14);
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b; --unknown: #898781;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.report) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #a3a29a;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+      --router: #3987e5; --net: #d95926; --signal: #199e70;
+      --band: #3d2820; --idle: #252523; --hover: rgba(255,255,255,.06); --select: rgba(255,255,255,.18);
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  .top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; align-items: baseline; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+  button, .button { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); cursor: pointer; text-decoration: none;
+           border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; min-height: 32px; display: inline-flex; align-items: center; }
+  button:hover, .button:hover { background: var(--hover); }
+  button:disabled { opacity: .6; cursor: default; }
+  button:focus-visible, .button:focus-visible, input:focus-visible { outline: 2px solid var(--ink2); outline-offset: 1px; }
+
+  .banner { display: flex; gap: 12px; align-items: center; border-left: 6px solid var(--unknown); }
+  .banner[data-level=good] { border-left-color: var(--good); }
+  .banner[data-level=warning] { border-left-color: var(--warning); }
+  .banner[data-level=serious] { border-left-color: var(--serious); }
+  .banner[data-level=critical] { border-left-color: var(--critical); }
+  .icon { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+          font-weight: 700; font-size: 18px; color: #fff; background: var(--unknown); }
+  .banner[data-level=good] .icon { background: var(--good); }
+  .banner[data-level=warning] .icon { background: var(--warning); color: #0b0b0b; }
+  .banner[data-level=serious] .icon { background: var(--serious); color: #0b0b0b; }
+  .banner[data-level=critical] .icon { background: var(--critical); }
+  .banner b { display: block; font-size: 20px; line-height: 1.2; font-weight: 650; }
+  .banner .text { min-width: 0; flex: 1; }
+  .banner .link { color: var(--ink2); font-size: 13px; text-align: right; }
+
+  .tiles { display: grid; gap: 12px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .tile .label { color: var(--ink2); font-size: 12px; }
+  .tile .value { font-size: 26px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; }
+  .tile .value small { font-size: 13px; font-weight: 400; color: var(--ink2); }
+  .tile .sub { color: var(--muted); font-size: 12px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+  .group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .controls button[aria-pressed=true] { font-weight: 650; border-color: var(--ink2); }
+  .controls button[aria-pressed=true]::before { content: "\2713\00a0"; }
+  .controls label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; color: var(--ink2); }
+  input[type=datetime-local] { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); min-height: 32px;
+                               border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
+  .push { margin-left: auto; }
+  #rangeError { color: var(--ink); font-size: 13px; }
+  #rangeError::before { content: "\2715\00a0"; color: var(--critical); font-weight: 700; }
+  #rangeError:empty { display: none; }
+
+  .charts { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .wide { grid-column: 1 / -1; }
+  .chart-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; margin-bottom: 4px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--ink2); font-size: 12px; align-items: center; }
+  .legend i { display: inline-block; width: 16px; height: 2px; vertical-align: middle; margin-right: 5px; }
+  .legend i.swatch { height: 10px; width: 12px; }
+  svg { display: block; width: 100%; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+  svg:focus { outline: none; }
+  svg:focus-visible { outline: 2px solid var(--ink2); outline-offset: 2px; }
+  svg text { fill: var(--muted); font-size: 11px; font-family: inherit; }
+  svg text.direct { fill: var(--ink2); font-size: 12px; }
+  svg text.marker { fill: var(--ink2); font-size: 11px; }
+  svg .hit { cursor: crosshair; }
+  .stale { opacity: .55; transition: opacity .15s; }
+
+  #tip { position: fixed; z-index: 30; pointer-events: none; display: none; background: var(--surface); color: var(--ink);
+         border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.18); padding: 6px 10px;
+         font-size: 12px; min-width: 140px; }
+  #tip .when { color: var(--muted); margin-bottom: 2px; }
+  #tip .row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #tip .row i { width: 12px; height: 2px; flex: none; }
+  #tip .row strong { font-variant-numeric: tabular-nums; }
+  #tip .row span { color: var(--ink2); }
+
+  .tables { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  .scroll { overflow: auto; max-height: 340px; margin-top: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th { position: sticky; top: 0; background: var(--surface); color: var(--ink2); font-weight: 500; font-size: 12px; text-align: right; }
+  th, td { padding: 4px 10px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  td.left, th.left { text-align: left; }
+  td.empty { color: var(--muted); text-align: left; white-space: normal; }
+  details > summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
+  footer { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  footer p { margin: 0 0 6px; }
+
+  /* the commands drawer: beside the page on a wide screen, over it on a narrow one */
+  .drawer { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0; width: 480px; max-width: 100vw; display: flex; flex-direction: column; gap: 8px;
+            background: var(--surface); border-left: 1px solid var(--border); box-shadow: -4px 0 16px rgba(0,0,0,.14); padding: 12px 14px; }
+  .drawer header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .drawer h2 { font-size: 15px; }
+  .kinds { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink2); margin: 0; padding: 0; border: 0; }
+  .kinds label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; min-height: 24px; }
+  .defs { font-size: 12px; color: var(--ink2); max-height: 34vh; overflow: auto; margin-top: 4px; }
+  .defs p { margin: 0 0 6px; }
+  code, pre, .mono { font-family: Consolas, "Cascadia Mono", Menlo, monospace; }
+  .defs code { display: block; color: var(--ink); overflow-wrap: anywhere; }
+  .cmds { flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--grid); }
+  .cmd { padding: 5px 2px 5px 8px; border-bottom: 1px solid var(--grid); border-left: 3px solid transparent; font-size: 12px; }
+  .cmd.failed { border-left-color: var(--critical); }
+  .cmd .line { display: flex; flex-wrap: wrap; gap: 0 10px; align-items: baseline; font-variant-numeric: tabular-nums; }
+  .cmd .time { color: var(--muted); }
+  .cmd .state::before { font-weight: 700; margin-right: 3px; }
+  .cmd .state.ok::before { content: "\2713"; color: var(--good); }
+  .cmd .state.bad::before { content: "\2715"; color: var(--critical); }
+  .cmd .res { color: var(--ink2); overflow-wrap: anywhere; }
+  .cmd code { display: block; overflow-wrap: anywhere; }
+  .cmd pre { margin: 4px 0 0; font-size: 11px; overflow-x: auto; color: var(--ink2); }
+  #cmdStatus { flex: none; }
+  body.drawer-open main { max-width: none; margin: 0; padding-right: 496px; }
+
+  dialog { color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; width: min(460px, calc(100vw - 24px)); }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  dialog h2 { font-size: 15px; margin-bottom: 8px; }
+  dialog p { margin: 0 0 8px; font-size: 13px; }
+  dialog label { display: flex; gap: 6px; font-size: 13px; align-items: flex-start; margin-bottom: 8px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .actions .primary { font-weight: 650; border-color: var(--ink2); }
+  #exportStatus { min-height: 18px; }
+
+  /* the PDF: the same page, printed by a browser with no window */
+  #reportHead, #reportCommands { display: none; }
+  .report #reportHead, .report #reportCommands { display: block; }
+  .report #reportHead > *, .report #reportCommands > * { margin-top: 0; margin-bottom: 8px; }
+  .report #reportCommands h2 { margin-top: 14px; }
+  .report .no-report { display: none !important; }
+  /* block, not grid: columns inside a grid overflow the page and Chrome then shrinks every page to fit */
+  .report main { max-width: none; padding: 0; display: block; }
+  .report main > * { margin-bottom: 12px; }
+  .report .charts { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  .report .tiles { display: none; }
+  .report svg { height: auto; }
+  .report body, .report .card { background: #fff; }
+  .report .card { border-color: #d5d4cc; }
+  .report .scroll { max-height: none; overflow: visible; }
+  .report th { position: static; }
+  .report th, .report td { padding: 2px 5px; white-space: normal; font-size: 11px; }
+  #reportHead h1 { font-size: 18px; }
+  #reportHead p { margin: 0; }
+  .report-setups { margin: 0; padding-left: 18px; }
+  .report-trace { break-inside: avoid; margin-top: 8px; }
+  .report-trace pre { margin: 2px 0 0; font-size: 10px; }
+  .print-rows { columns: 2; column-gap: 16px; font: 8px/1.3 Consolas, "Cascadia Mono", Menlo, monospace; }
+  .print-rows div { break-inside: avoid; overflow-wrap: anywhere; }
+  @page { size: A4 landscape; margin: 10mm; }
+  @media print {
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .charts .card, tr, footer { break-inside: avoid; }
+    h2 { break-after: avoid; }
+  }
+
+  @media (max-width: 1000px) {
+    .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .charts { grid-template-columns: minmax(0, 1fr); }
+    body.drawer-open main { padding-right: 16px; }
+  }
+  @media (max-width: 560px) {
+    main { padding: 10px; }
+    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .banner { flex-wrap: wrap; }
+    .banner .link { text-align: left; width: 100%; }
+    .banner b { font-size: 18px; }
+    .push { margin-left: 0; }
+    .controls label { width: 100%; justify-content: space-between; }
+    .controls input { flex: 1; min-width: 0; }
+    .drawer { width: 100vw; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section id="reportHead">
+    <h1>Connection report</h1>
+    <p id="reportRange"></p>
+    <ul class="report-setups" id="reportSetups"></ul>
+  </section>
+
+  <div class="top no-report"><h1>Connection monitor</h1><span class="muted" id="updated">Loading…</span></div>
+
+  <section class="card banner no-report" id="banner" data-level="unknown" aria-live="polite">
+    <div class="icon" id="icon" aria-hidden="true">?</div>
+    <div class="text"><b id="title">Loading the logs…</b><span id="detail"></span></div>
+    <div class="link" id="link"></div>
+  </section>
+
+  <section class="tiles no-report" id="tiles" aria-label="Right now"></section>
+
+  <div class="controls no-report">
+    <div class="group" role="group" aria-label="Time range">
+      <button type="button" data-window="15m">15 min</button><button type="button" data-window="1h">1 hour</button>
+      <button type="button" data-window="6h">6 hours</button><button type="button" data-window="24h">24 hours</button>
+      <button type="button" data-window="all">All</button>
+    </div>
+    <form class="group" id="rangeForm" novalidate>
+      <label>From <input type="datetime-local" id="from" step="1"></label>
+      <label>To <input type="datetime-local" id="to" step="1"></label>
+      <button type="submit">Apply</button>
+    </form>
+    <span id="rangeError" role="alert"></span>
+    <div class="group push">
+      <button type="button" id="openCommands" aria-expanded="false" aria-controls="drawer">Commands</button>
+      <button type="button" id="openExport">Export</button>
+    </div>
+  </div>
+  <div class="muted no-report" id="rangeNote"></div>
+
+  <section class="charts" id="charts">
+    <div class="card wide">
+      <div class="chart-title"><h2>Slowest reply (ms)</h2>
+        <div class="legend"><span><i style="background:var(--router)"></i>Digi router</span>
+          <span><i style="background:var(--net)"></i>Internet (1.1.1.1, 8.8.8.8)</span>
+          <span>Ticks along the top: lost pings</span></div></div>
+      <div id="c-reply"></div>
+    </div>
+    <div class="card wide">
+      <div class="chart-title"><h2>Pings lost (%)</h2>
+        <div class="legend"><span><i style="background:var(--router)"></i>Digi router</span>
+          <span><i style="background:var(--net)"></i>Internet</span>
+          <span><i class="swatch" style="background:var(--band)"></i>Problem minutes</span>
+          <span><i class="swatch" style="background:var(--idle)"></i>Not measured, or a marked restart</span></div></div>
+      <div id="c-lost"></div>
+    </div>
+    <div class="card"><div class="chart-title"><h2>HTTPS connection, slowest (ms)</h2></div><div id="c-https"></div></div>
+    <div class="card"><div class="chart-title"><h2>DNS lookup, slowest (ms)</h2></div><div id="c-dns"></div></div>
+    <div class="card"><div class="chart-title"><h2>Wi-Fi signal, lowest (%)</h2></div><div id="c-signal"></div></div>
+  </section>
+
+  <section class="tables" id="tables">
+    <div class="card"><h2>By setup <span class="muted range-label"></span></h2><div class="scroll"><table id="t-periods"></table></div></div>
+    <div class="card"><h2>Problems, newest first <span class="muted range-label"></span></h2>
+      <div class="scroll"><table id="t-incidents"></table></div></div>
+    <div class="card"><h2>By day <span class="muted range-label"></span></h2><span class="muted">Adds cable and Wi-Fi together; only the monitored minutes of each day.</span>
+      <div class="scroll"><table id="t-days"></table></div></div>
+    <div class="card no-report"><details><summary>The charts' numbers as a table</summary>
+      <div class="scroll"><table id="t-data"></table></div></details></div>
+  </section>
+
+  <footer class="card">
+    <p><b>Problem minute:</b> at least 1 router ping lost, or at least 2 internet pings lost, or at least 3 router replies of
+      <span id="slow">150</span> ms or more. These thresholds are this monitor's own, not an industry standard.
+      <b>With lost pings</b> leaves out the minutes where the router was only slow.</p>
+    <p><b>Not counted:</b> stretches under 3 minutes, the first and last minute of each stretch (including the minute
+      running now), minutes when the Asus lost a ping, and marked router restarts.
+      Wi-Fi stays separate from cable, because lost pings on Wi-Fi can come from the radio link.</p>
+    <p><b>Measuring:</b> one ping about every 0,55 s per address (no reply in 1 s = lost), one HTTPS connection test and one
+      DNS lookup about every second (2 s limit), Wi-Fi signal every 5 s. All from this laptop, only while it's awake.</p>
+  </footer>
+
+  <section class="card" id="reportCommands"></section>
+</main>
+
+<aside class="drawer no-report" id="drawer" aria-labelledby="drawerTitle" hidden>
+  <header>
+    <div><h2 id="drawerTitle">Commands run in the background</h2><div class="muted" id="drawerRange"></div></div>
+    <button type="button" id="closeDrawer" aria-label="Close the commands list">Close</button>
+  </header>
+  <fieldset class="kinds" id="kinds"><legend hidden>Which commands to show</legend></fieldset>
+  <div class="kinds"><label><input type="checkbox" id="onlyFailed"> Only failed</label></div>
+  <details>
+    <summary>How each command is run</summary>
+    <div class="defs" id="defs"></div>
+  </details>
+  <div class="cmds" id="cmds" tabindex="0" aria-label="Commands, newest first"></div>
+  <div class="muted" id="cmdStatus" role="status"></div>
+</aside>
+
+<dialog id="exportDialog" aria-labelledby="exportTitle">
+  <h2 id="exportTitle">Export this range</h2>
+  <p id="exportRange"></p>
+  <p class="muted">The PDF holds the charts, the tables, how each command is run, every traceroute and every failed command.</p>
+  <label><input type="checkbox" id="exportAll"> <span id="exportAllLabel"></span></label>
+  <p class="muted" id="exportNote"></p>
+  <div class="actions">
+    <button type="button" class="primary" id="exportPdf">Download PDF</button>
+    <a class="button" id="exportCsv" download>Download commands CSV</a>
+    <button type="button" id="exportClose">Close</button>
+  </div>
+  <p class="muted" id="exportStatus" role="status"></p>
+</dialog>
+
+<div id="tip" role="status"></div>
+
+<!--REPORT-->
+<script>
+"use strict";
+const REPORT = window.__REPORT__ || null;
+if (REPORT) document.documentElement.classList.add("report");
+const $ = id => document.getElementById(id);
+const nf = (v, d = 0) => v == null ? "—" : new Intl.NumberFormat("ro-RO", { maximumFractionDigits: d, minimumFractionDigits: d }).format(v);
+const pad = n => String(n).padStart(2, "0");
+const hm = t => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const hms = t => { const d = new Date(t); return `${hm(t)}:${pad(d.getSeconds())}`; };
+const hmsm = t => `${hms(t)},${String(new Date(t).getMilliseconds()).padStart(3, "0")}`;
+const dmy = t => { const d = new Date(t); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`; };
+const dmyy = t => `${dmy(t)}.${new Date(t).getFullYear()}`;
+const pct = (a, b, d = 2) => b ? `${nf(100 * a / b, d)}%` : "—";
+const dur = s => s < 60 ? `${nf(s)} s` : `${Math.floor(s / 60)} min ${pad(Math.round(s % 60))} s`;
+const sameDay = (a, b) => dmyy(a) === dmyy(b);
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs = {}, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function node(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function spanText(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return s % 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s / 60} min`;
+  const parts = (n, per, big, small) => n % per ? `${Math.floor(n / per)} ${big} ${n % per} ${small}` : `${n / per} ${big}`;
+  const minutes = Math.round(s / 60), hours = Math.round(s / 3600);
+  return minutes < 1440 ? parts(minutes, 60, "h", "min") : parts(hours, 24, "d", "h");
+}
+const rangeText = (a, b) => sameDay(a, b) ? `${dmy(a)} ${hms(a)} – ${hms(b)}` : `${dmy(a)} ${hms(a)} – ${dmy(b)} ${hms(b)}`;
+
+const PRESETS = ["15m", "1h", "6h", "24h", "all"];
+const PRESET_NAMES = { "15m": "15 minutes", "1h": "hour", "6h": "6 hours", "24h": "24 hours" };
+let view = { window: "1h" };
+let state = null;
+let drawnSig = null;
+let inputsDirty = false;
+let carriedError = "";  // shown by the next applyView, which otherwise clears the error line
+let drag = null;   // the chart selection in progress; charts are not redrawn while it lasts
+const pointer = {};  // per chart: the time under the pointer or keyboard, kept across redraws
+
+const viewKey = v => v.window || `${v.from}-${v.to}`;
+const viewQuery = v => v.window ? `window=${v.window}` : `from=${v.from}&to=${v.to}`;
+const viewHash = v => v.window ? `#${v.window}` : `#from=${v.from}&to=${v.to}`;
+function parseHash() {
+  const h = location.hash.slice(1);
+  if (PRESETS.includes(h)) return { window: h };
+  const m = /^from=(\d+)&to=(\d+)$/.exec(h);
+  return m ? { from: Number(m[1]), to: Number(m[2]) } : { window: "1h" };
+}
+// through the hash, so the browser's Back button returns to the previous range
+function goTo(v) {
+  if (location.hash === viewHash(v)) applyView(v);
+  else location.hash = viewHash(v);
+}
+function applyView(v) {
+  view = v;
+  inputsDirty = false;
+  $("rangeError").textContent = carriedError;
+  carriedError = "";
+  document.querySelectorAll("[data-window]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.window === v.window)));
+  setStale(true);
+  refresh(true);
+  if (cmd.open) loadCommands(true);
+}
+function setStale(on) {
+  $("charts").classList.toggle("stale", on);
+  $("tables").classList.toggle("stale", on);
+}
+
+function niceMax(v, floor) {
+  for (const m of [floor, 50, 100, 200, 500, 1000, 2000, 5000]) if (m >= v && m >= floor) return m;
+  return Math.ceil(v / 1000) * 1000;
+}
+function tickLabel(t, s) {
+  const span = s.end - s.start;
+  if (span <= 600000) return hms(t);
+  if (sameDay(s.start, s.end)) return hm(t);
+  if (span <= 4 * 86400000) return `${dmy(t)} ${hm(t)}`;
+  return dmy(t);
+}
+
+function drawChart(id, spec) {
+  const host = $(id);
+  const W = Math.max(host.clientWidth, 260), H = REPORT ? Math.round(spec.height * .78) : spec.height;  // all five fit on page 1
+  const L = 42, R = spec.direct ? 62 : 12, T = 8, B = 20;
+  const s = state.series, rows = s.rows;
+  const X = t => L + (t - s.start) / Math.max(1, s.end - s.start) * (W - L - R);
+  const Y = v => T + (1 - v / spec.max) * (H - T - B);
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", tabindex: 0,
+                          "aria-label": spec.title + ". Use the left and right arrow keys to read values. Drag to zoom into a period." });
+
+  // not measured, then problem minutes, under everything else
+  const measured = spec.measured || (r => r.routerSent > 0);
+  let gap = null;
+  rows.forEach((r, i) => {
+    if (!measured(r)) gap = gap ?? r.t;
+    if (gap != null && (measured(r) || i === rows.length - 1)) {
+      const x0 = Math.max(L, X(gap)), x1 = Math.min(W - R, X(measured(r) ? r.t : r.t + s.step));
+      if (x1 > x0) svg.append(el("rect", { x: x0, y: T, width: x1 - x0, height: H - T - B, fill: "var(--idle)" }));
+      gap = null;
+    }
+  });
+  for (const m of state.restarts) {
+    if (m.end < s.start || m.start > s.end) continue;
+    const x0 = Math.max(L, X(m.start)), x1 = Math.min(W - R, X(m.end));
+    if (x1 > x0) svg.append(el("rect", { x: x0, y: T, width: x1 - x0, height: H - T - B, fill: "var(--idle)" }));
+  }
+  for (const inc of state.incidents) {
+    if (inc.end < s.start || inc.start > s.end) continue;
+    const x0 = Math.max(L, X(inc.start)), x1 = Math.min(W - R, X(inc.end));
+    if (x1 > x0) svg.append(el("rect", { x: x0, y: T, width: Math.max(1, x1 - x0), height: H - T - B, fill: "var(--band)" }));
+  }
+  for (const f of [0, .5, 1]) {
+    const v = spec.max * f, y = Y(v);
+    svg.append(el("line", { x1: L, x2: W - R, y1: y, y2: y, stroke: f === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+    svg.append(el("text", { x: L - 6, y: y + 4, "text-anchor": "end" }, nf(v)));
+  }
+  const ticks = Math.max(2, Math.min(8, Math.floor((W - L - R) / 90)));
+  for (let i = 0; i <= ticks; i++) {
+    const t = s.start + (s.end - s.start) * i / ticks, x = X(t);
+    svg.append(el("text", { x, y: H - 5, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle" }, tickLabel(t, s)));
+  }
+  // markers close together take the next line down, so their labels stay readable
+  const labelEnds = [];
+  (spec.markers ? state.markers : []).forEach(m => {
+    const x = X(m.t);
+    svg.append(el("line", { x1: x, x2: x, y1: T, y2: H - B, stroke: "var(--ink2)", "stroke-width": 1, "stroke-dasharray": "3 3" }));
+    const nearEnd = x > (W - R) - 90;  // near the right edge the label sits on the line's left
+    const width = 90, left = nearEnd ? x - 4 - width : x + 4;
+    let line = 0;
+    while (labelEnds[line] != null && labelEnds[line] > left) line++;
+    labelEnds[line] = left + width;
+    svg.append(el("text", { class: "marker", x: nearEnd ? x - 4 : x + 4, y: T + 26 + line * 13, "text-anchor": nearEnd ? "end" : "start" }, m.label));
+  });
+  // series
+  spec.series.forEach(ser => {
+    let d = "", pen = false;
+    rows.forEach(r => {
+      const v = ser.get(r);
+      if (v == null) { pen = false; return; }
+      const x = X(r.t + s.step / 2).toFixed(1), y = Y(Math.min(v, spec.max)).toFixed(1);
+      d += pen ? `L${x} ${y}` : `M${x} ${y}h.01`;
+      pen = true;
+    });
+    svg.append(el("path", { d, fill: "none", stroke: `var(${ser.color})`, "stroke-width": 2,
+                            "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    if (ser.lost) rows.forEach(r => {
+      if (!ser.lost(r)) return;
+      const x = X(r.t + s.step / 2);
+      svg.append(el("line", { x1: x, x2: x, y1: T + ser.tickRow * 7, y2: T + ser.tickRow * 7 + 6,
+                              stroke: `var(${ser.color})`, "stroke-width": 2 }));
+    });
+  });
+  // direct labels at the line ends, moved apart when they would overlap
+  if (spec.direct) {
+    const ends = spec.series.map(ser => {
+      const last = [...rows].reverse().find(r => ser.get(r) != null);
+      return last ? { label: ser.short, y: Y(Math.min(ser.get(last), spec.max)) } : null;
+    }).filter(Boolean).sort((a, b) => a.y - b.y);
+    // lowest label first, kept above the axis; each one above it stays a full line away
+    for (let i = ends.length - 1, floor = H - B - 4; i >= 0; i--) {
+      ends[i].y = Math.min(ends[i].y, floor);
+      floor = ends[i].y - 14;
+    }
+    ends.forEach(e => svg.append(el("text", { class: "direct", x: W - R + 6, y: e.y + 4 }, e.label)));
+  }
+
+  const cross = el("line", { y1: T, y2: H - B, stroke: "var(--ink2)", "stroke-width": 1, visibility: "hidden" });
+  svg.append(cross);
+  const hit = el("rect", { class: "hit", x: L, y: 0, width: W - L - R, height: H, fill: "transparent" });
+  svg.append(hit);
+  const nearest = t => rows.reduce((best, r) => Math.abs(r.t + s.step / 2 - t) < Math.abs(best.t + s.step / 2 - t) ? r : best, rows[0]);
+  const show = (t, cx, cy) => {
+    const r = nearest(t), x = X(r.t + s.step / 2);
+    cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.setAttribute("visibility", "visible");
+    showTip(spec, r, cx, cy);
+  };
+  const hide = () => { pointer[id] = null; cross.setAttribute("visibility", "hidden"); $("tip").style.display = "none"; };
+  const timeAt = clientX => {
+    const box = svg.getBoundingClientRect();
+    const x = Math.max(L, Math.min(W - R, (clientX - box.left) * W / box.width));
+    return { x, t: s.start + (x - L) / (W - L - R) * (s.end - s.start) };
+  };
+  hit.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    hit.setPointerCapture(e.pointerId);
+    const { x, t } = timeAt(e.clientX);
+    const rect = el("rect", { x, y: T, width: 0, height: H - T - B, fill: "var(--select)", stroke: "var(--ink2)", "stroke-width": 1 });
+    svg.insertBefore(rect, cross);
+    drag = { x0: x, t0: t, t1: t, rect, series: s, moved: 0,
+             end: () => { rect.remove(); drag = null; } };
+    hide();
+  });
+  hit.addEventListener("pointermove", e => {
+    if (drag && drag.rect.ownerSVGElement === svg) {
+      const { x, t } = timeAt(e.clientX);
+      drag.t1 = t;
+      drag.moved = Math.abs(x - drag.x0);
+      drag.rect.setAttribute("x", Math.min(x, drag.x0));
+      drag.rect.setAttribute("width", drag.moved);
+      showSelectionTip(selection(drag), e.clientX, e.clientY);
+      return;
+    }
+    const { t } = timeAt(e.clientX);
+    pointer[id] = { t, cx: e.clientX, cy: e.clientY };
+    show(t, e.clientX, e.clientY);
+  });
+  hit.addEventListener("pointerup", () => {
+    if (!drag || drag.rect.ownerSVGElement !== svg) return;
+    const finished = drag;
+    finished.end();
+    $("tip").style.display = "none";
+    if (finished.moved >= 6) goTo(selection(finished));
+    else if (state) render(false);  // a click: draw what arrived during it
+  });
+  hit.addEventListener("pointercancel", cancelDrag);
+  hit.addEventListener("pointerleave", () => { if (!drag) hide(); });
+  svg.addEventListener("blur", hide);
+  svg.addEventListener("keydown", e => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const box = svg.getBoundingClientRect();
+    const t = (pointer[id]?.t ?? s.end) + (e.key === "ArrowLeft" ? -s.step : s.step);
+    const clamped = Math.max(s.start, Math.min(s.end, t));
+    pointer[id] = { t: clamped, cx: box.left + X(clamped) * box.width / W, cy: box.top + 20, keep: true };
+    show(clamped, pointer[id].cx, pointer[id].cy);
+  });
+  const hadFocus = host.contains(document.activeElement);
+  host.replaceChildren(svg);
+  if (hadFocus) svg.focus({ preventScroll: true });
+  if (pointer[id]) show(pointer[id].t, pointer[id].cx, pointer[id].cy);
+}
+
+// the period a drag selects: whole chart points, at least the 10 seconds the server accepts
+function selection(d) {
+  const step = d.series.step, now = state.now;
+  let a = Math.floor(Math.min(d.t0, d.t1) / step) * step;
+  let b = Math.ceil(Math.max(d.t0, d.t1) / step) * step;
+  a = Math.max(a, d.series.start);
+  b = Math.min(b, d.series.end, now);
+  if (b - a < 10000) {
+    b = Math.min(Math.round((a + b) / 2) + 5000, now);
+    a = b - 10000;
+  }
+  return { from: Math.round(a), to: Math.round(b) };
+}
+function showSelectionTip(sel, cx, cy) {
+  const tip = $("tip");
+  tip.replaceChildren(node("div", "when", rangeText(sel.from, sel.to)), node("div", "", `${spanText(sel.to - sel.from)}. Release to zoom, Esc to cancel.`));
+  placeTip(tip, cx, cy);
+}
+function cancelDrag() {
+  if (!drag) return;
+  drag.end();
+  $("tip").style.display = "none";
+  if (state) render(false);
+}
+
+function placeTip(tip, cx, cy) {
+  tip.style.display = "block";
+  const box = tip.getBoundingClientRect();
+  tip.style.left = Math.max(6, Math.min(innerWidth - box.width - 6, cx + 14)) + "px";
+  tip.style.top = Math.max(6, Math.min(innerHeight - box.height - 6, cy - box.height - 10)) + "px";
+}
+function showTip(spec, r, cx, cy) {
+  const tip = $("tip");
+  tip.replaceChildren();
+  const end = r.t + state.series.step;
+  tip.append(node("div", "when", rangeText(r.t, end)));
+  for (const ser of spec.series) {
+    const row = node("div", "row");
+    const key = node("i"); key.style.background = `var(${ser.color})`;
+    row.append(key, node("strong", "", ser.text(r)), node("span", "", ser.short || spec.title));
+    tip.append(row);
+  }
+  placeTip(tip, cx, cy);
+}
+
+const lostPct = (l, n) => n ? 100 * l / n : null;
+const CHARTS = () => {
+  const rows = state.series.rows;
+  const replyMax = niceMax(Math.max(...rows.map(r => Math.max(r.routerMs ?? 0, r.netMs ?? 0)), 0) * 1.15, 50);
+  const msText = v => v == null ? "—" : `${nf(v)} ms`;
+  const limit = v => v == null ? "—" : v >= 2000 ? "no answer" : `${nf(v)} ms`;
+  const replyText = (ms, lost, sent) => (sent ? msText(ms) : "—") + (lost ? `, ${nf(lost)} lost` : "");
+  return {
+    "c-reply": { title: "Slowest reply", height: 210, max: replyMax, direct: true, markers: true, series: [
+      { short: "Router", color: "--router", get: r => r.routerMs, lost: r => r.routerLost, tickRow: 0,
+        text: r => replyText(r.routerMs, r.routerLost, r.routerSent) },
+      { short: "Internet", color: "--net", get: r => r.netMs, lost: r => r.netLost, tickRow: 1,
+        text: r => replyText(r.netMs, r.netLost, r.netSent) } ] },
+    "c-lost": { title: "Pings lost", height: 150, max: 100, direct: true, series: [
+      { short: "Router", color: "--router", get: r => lostPct(r.routerLost, r.routerSent),
+        text: r => r.routerSent ? `${nf(r.routerLost)} of ${nf(r.routerSent)}` : "—" },
+      { short: "Internet", color: "--net", get: r => lostPct(r.netLost, r.netSent),
+        text: r => r.netSent ? `${nf(r.netLost)} of ${nf(r.netSent)}` : "—" } ] },
+    "c-https": { title: "HTTPS connection", height: 130, max: 2000, measured: r => r.https != null,
+      series: [{ color: "--net", get: r => r.https, text: r => limit(r.https) }] },
+    "c-dns": { title: "DNS lookup", height: 130, max: 2000, measured: r => r.dns != null,
+      series: [{ color: "--net", get: r => r.dns, text: r => limit(r.dns) }] },
+    "c-signal": { title: "Wi-Fi signal", height: 130, max: 100, measured: r => r.signal != null,
+      series: [{ color: "--signal", get: r => r.signal, text: r => r.signal == null ? "—" : `${nf(r.signal)}%` }] },
+  };
+};
+
+function fillTable(t, heads, rows, leftCols = [], emptyText = "Nothing in this range.") {
+  if (typeof t === "string") t = $(t);
+  const thead = document.createElement("thead"), tr = document.createElement("tr");
+  heads.forEach((h, i) => {
+    const th = node("th", leftCols.includes(i) ? "left" : "", h); th.scope = "col";
+    tr.append(th);
+  });
+  thead.append(tr);
+  const tbody = document.createElement("tbody");
+  rows.forEach(row => {
+    const r = document.createElement("tr");
+    row.forEach((c, i) => r.append(node("td", leftCols.includes(i) ? "left" : "", c)));
+    tbody.append(r);
+  });
+  if (!rows.length) {
+    const r = document.createElement("tr"), td = node("td", "empty", emptyText);
+    td.colSpan = heads.length;
+    r.append(td);
+    tbody.append(r);
+  }
+  t.replaceChildren(thead, tbody);
+}
+
+function tile(label, value, unit, sub) {
+  const d = node("div", "card tile");
+  const v = node("div", "value", value);
+  if (unit) v.append(node("small", "", " " + unit));
+  d.append(node("div", "label", label), v, node("div", "sub", sub));
+  return d;
+}
+
+function renderLive() {
+  const s = state;
+  const icons = { good: "✓", warning: "!", serious: "!", critical: "✕", unknown: "?" };
+  $("banner").dataset.level = s.status.level;
+  $("icon").textContent = icons[s.status.level];
+  $("title").textContent = s.status.title;
+  $("detail").textContent = s.status.detail;
+  document.title = `${icons[s.status.level]} ${s.status.title}`;
+  $("updated").textContent = `Updated ${hms(s.now)}`;
+  const c = s.connection;
+  $("link").textContent = c.kind ? `${c.kind}, ${c.address}` : "Not on the home network";
+
+  const t = s.tiles;
+  const wifiLabel = c.kind === "Cable" ? "No Wi-Fi: on the cable" : c.channel ? `Channel ${c.channel}, ${c.rx ?? "—"}/${c.tx ?? "—"} Mbps` : "No Wi-Fi reading";
+  $("tiles").replaceChildren(
+    tile("Digi router, reply", nf(t.router), "ms", `Lost ${nf(t.routerLost5m)} in 5 min`),
+    tile("Internet, reply", nf(t.net), "ms", `Lost ${nf(t.netLost5m)} in 5 min`),
+    tile("HTTPS connection", nf(t.https), "ms", `Failed ${nf(t.httpsFail5m)} in 5 min`),
+    tile("DNS lookup", nf(t.dns), "ms", `Failed ${nf(t.dnsFail5m)} in 5 min`),
+    tile("Wi-Fi signal", c.signal == null ? "—" : nf(c.signal), c.signal == null ? "" : "%", wifiLabel));
+}
+
+function renderRange() {
+  const s = state;
+  const specs = CHARTS();
+  for (const id in specs) drawChart(id, specs[id]);
+
+  const label = rangeText(s.range.from, s.range.to);
+  document.querySelectorAll(".range-label").forEach(e => e.textContent = label);
+  fillTable("t-periods",
+    ["Setup", "From", "To", "Minutes counted", "With problems", "With lost pings", "Router pings lost", "Internet pings lost", "Longest full outage"],
+    s.periods.map(p => [p.label, `${dmy(p.from)} ${hm(p.from)}`, `${dmy(p.to)} ${hm(p.to)}`, nf(p.counted),
+      `${nf(p.problem)} (${pct(p.problem, p.counted, 0)})`, `${nf(p.withLoss)} (${pct(p.withLoss, p.counted, 0)})`,
+      `${nf(p.routerLost)} of ${nf(p.routerSent)} (${pct(p.routerLost, p.routerSent)})`,
+      `${nf(p.netLost)} of ${nf(p.netSent)} (${pct(p.netLost, p.netSent)})`,
+      p.longest ? dur(p.longest) : "none"]), [1, 2]);
+  fillTable("t-incidents", ["When", "Setup", "Problem minutes", "Router pings lost", "Internet pings lost", "Slowest router reply"],
+    s.incidents.map(i => [`${dmy(i.start)} ${hm(i.start)}–${hm(i.end)}`, i.setup, nf(i.minutes),
+      `${nf(i.routerLost)} of ${nf(i.routerSent)}`, `${nf(i.netLost)} of ${nf(i.netSent)}`, `${nf(i.worst)} ms`]), [1],
+    "No problem minutes in this range.");
+  fillTable("t-days", ["Day", "Minutes counted", "With problems", "With lost pings", "Router pings lost", "Internet pings lost"],
+    s.days.map(d => [d.day.split("-").reverse().join("."), nf(d.counted),
+      `${nf(d.problem)} (${pct(d.problem, d.counted, 0)})`, `${nf(d.withLoss)} (${pct(d.withLoss, d.counted, 0)})`,
+      `${nf(d.routerLost)} of ${nf(d.routerSent)} (${pct(d.routerLost, d.routerSent)})`,
+      `${nf(d.netLost)} of ${nf(d.netSent)} (${pct(d.netLost, d.netSent)})`]));
+  if (!REPORT) fillTable("t-data", ["Time", "Router ms", "Router lost", "Internet ms", "Internet lost", "HTTPS ms", "DNS ms", "Signal %"],
+    [...s.series.rows].reverse().map(r => [`${dmy(r.t)} ${hms(r.t)}`, nf(r.routerMs), `${nf(r.routerLost)} of ${nf(r.routerSent)}`,
+      nf(r.netMs), `${nf(r.netLost)} of ${nf(r.netSent)}`, nf(r.https), nf(r.dns), nf(r.signal)]));
+  $("slow").textContent = nf(s.slowMs);
+}
+
+function toInput(t) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${hms(t)}`;
+}
+function renderControls() {
+  const s = state, r = s.range;
+  const stepText = `Each chart point covers ${spanText(s.series.step)}, and shows the slowest or lowest value in it.`;
+  $("rangeNote").textContent = s.live
+    ? `Live: ${view.window === "all" ? "everything logged" : "the last " + PRESET_NAMES[view.window]}. ${stepText} Drag on a chart to zoom in.`
+    : `Fixed period: ${rangeText(r.from, r.to)} (${spanText(r.to - r.from)}). ${stepText} Drag on a chart to zoom in further; the browser's Back button goes back; a preset returns to live.`;
+  if (!inputsDirty) {
+    for (const [id, t] of [["from", r.from], ["to", r.to]])
+      if (document.activeElement !== $(id)) $(id).value = toInput(t);
+  }
+  $("openCommands").textContent = `Commands (${nf(s.commands.total)})`;
+  renderKinds();
+  $("drawerRange").textContent = rangeText(r.from, r.to) + (s.live ? ", live" : "");
+}
+
+function render(force) {
+  renderLive();
+  if (drag) return;
+  renderControls();
+  const sig = `${state.key}|${state.series.end}`;
+  if (force || sig !== drawnSig) {
+    renderRange();
+    drawnSig = sig;
+  }
+  setStale(false);
+}
+
+let pending = false;
+async function refresh(force) {
+  if (pending && !force) return;
+  pending = true;
+  const asked = viewKey(view);
+  try {
+    const res = await fetch(`/api/state?${viewQuery(view)}`, { cache: "no-store" });
+    if (res.status === 400) {
+      const body = await res.json();
+      if (asked === viewKey(view)) {
+        carriedError = `That period can't be shown: ${body.error}. Back to the last hour.`;
+        goTo({ window: "1h" });
+      }
+      return;
+    }
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (data.ready && data.key === viewKey(view)) { state = data; render(false); }
+    else if (!data.ready) $("detail").textContent = "Reading the monitors' history, a few seconds.";
+  } catch {
+    // keep the last picture on screen, but say clearly that it is old
+    $("banner").dataset.level = "unknown";
+    $("icon").textContent = "?";
+    $("title").textContent = "Dashboard server not reachable";
+    $("detail").textContent = "Run start.ps1 again. What's below is the last reading.";
+    document.title = "? Dashboard server not reachable";
+    setStale(true);
+  } finally {
+    pending = false;
+  }
+}
+
+// ---------------------------------------------------------------- the commands drawer
+
+const cmd = { open: false, pages: 0, shown: 0, next: null, loading: false, token: 0, off: new Set(), failed: false, built: false };
+const commandText = text => text.replace("{target}", "<address>");
+
+function renderKinds() {
+  const { counts, definitions } = state.commands;
+  const box = $("kinds");
+  if (!cmd.built) {
+    cmd.built = true;
+    for (const d of definitions) {
+      const label = node("label");
+      const input = node("input"); input.type = "checkbox"; input.checked = true; input.dataset.kind = d.kind;
+      input.addEventListener("change", () => {
+        if (input.checked) cmd.off.delete(d.kind); else cmd.off.add(d.kind);
+        loadCommands(true);
+      });
+      label.append(input, node("span", "", d.label), node("span", "muted", ""));
+      box.append(label);
+    }
+    $("defs").replaceChildren(...definitions.map(d => {
+      const p = node("p");
+      p.append(node("b", "", d.label), document.createTextNode(`, ${d.every}, from ${d.script}.`),
+               node("code", "", commandText(d.command)), document.createTextNode(d.note));
+      return p;
+    }), node("p", "", "Times are when each test round started, read back from the monitors' logs, so the commands of one round show the same time. Counts cover whole minutes, so a range's edges can add a few."),
+        node("p", "", "Not listed: the keep-awake helper's power call, this dashboard reading the log files, the browser that prints a PDF, and anything run by hand or by Claude in chat."));
+  }
+  box.querySelectorAll("label").forEach(label => {
+    const kind = label.querySelector("input").dataset.kind;
+    const c = counts[kind];
+    label.lastChild.textContent = c.failed ? `${nf(c.n)}, ${nf(c.failed)} failed` : nf(c.n);
+  });
+}
+
+function commandRow(c) {
+  const row = node("div", c.ok ? "cmd" : "cmd failed");
+  const line = node("div", "line");
+  line.append(node("span", "time", `${dmy(c.t)} ${hmsm(c.t)}`), node("span", c.ok ? "state ok" : "state bad", c.ok ? "ok" : "failed"), node("span", "res", c.result));
+  row.append(line, node("code", "", c.cmd));
+  if (c.output) {
+    const details = node("details");
+    details.append(node("summary", "", "Traceroute output"), node("pre", "", c.output));
+    row.append(details);
+  }
+  return row;
+}
+
+async function loadCommands(reset) {
+  if (cmd.loading && !reset) return;
+  const token = ++cmd.token;
+  cmd.loading = true;
+  const kinds = state ? state.commands.definitions.map(d => d.kind).filter(k => !cmd.off.has(k)) : [];
+  if (state && !kinds.length) {
+    $("cmds").replaceChildren();
+    $("cmdStatus").textContent = "Pick at least one kind of command.";
+    cmd.loading = false; cmd.next = null; cmd.pages = 0;
+    return;
+  }
+  const params = [viewQuery(view), "limit=200"];
+  if (cmd.off.size) params.push(`kinds=${kinds.join(",")}`);
+  if (cmd.failed) params.push("failed=1");
+  if (!reset && cmd.next != null) params.push(`before=${cmd.next}`);
+  try {
+    const res = await fetch(`/api/commands?${params.join("&")}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    if (token !== cmd.token) return;
+    const list = $("cmds"), rows = data.rows.map(commandRow);
+    if (reset) { list.replaceChildren(...rows); cmd.pages = 1; cmd.shown = rows.length; }
+    else { list.append(...rows); cmd.pages++; cmd.shown += rows.length; }
+    cmd.next = data.next;
+    $("cmdStatus").textContent = !cmd.shown ? (cmd.failed ? "No failed commands in this range." : "No commands in this range.")
+      : `${nf(cmd.shown)} shown, newest first${cmd.next != null ? ". Scroll down for older ones." : ". That's all of this range."}`;
+  } catch {
+    if (token === cmd.token) $("cmdStatus").textContent = "Couldn't read the commands. The dashboard server may be down.";
+  } finally {
+    if (token === cmd.token) cmd.loading = false;
+  }
+}
+
+function toggleDrawer(open) {
+  cmd.open = open;
+  $("drawer").hidden = !open;
+  document.body.classList.toggle("drawer-open", open);
+  $("openCommands").setAttribute("aria-expanded", String(open));
+  if (state) render(true);
+  if (open) loadCommands(true);
+  else $("openCommands").focus();
+}
+
+// ---------------------------------------------------------------- export
+
+let exportRange = null;
+function openExport() {
+  if (!state) return;
+  exportRange = { ...state.range };
+  const { total, listLimit } = state.commands;
+  const tooMany = total > listLimit;
+  $("exportRange").textContent = `${rangeText(exportRange.from, exportRange.to)} (${spanText(exportRange.to - exportRange.from)}), about ${nf(total)} commands.`;
+  $("exportAll").checked = false;
+  $("exportAll").disabled = tooMany;
+  $("exportAllLabel").textContent = `Also list every command (about ${nf(total)} rows, about ${nf(Math.max(1, Math.ceil(total / 124)))} pages)`;
+  $("exportNote").textContent = tooMany ? `That's more than the ${nf(listLimit)} a PDF can list. The CSV has every one of them.` : "";
+  $("exportCsv").href = `/api/commands.csv?from=${exportRange.from}&to=${exportRange.to}`;
+  $("exportStatus").textContent = "";
+  $("exportDialog").showModal();
+}
+async function downloadPdf() {
+  const button = $("exportPdf"), status = $("exportStatus");
+  button.disabled = true;
+  button.textContent = "Building…";
+  status.textContent = "Building the PDF, usually a few seconds.";
+  try {
+    const res = await fetch(`/api/export.pdf?from=${exportRange.from}&to=${exportRange.to}&all=${$("exportAll").checked ? 1 : 0}`, { cache: "no-store" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `The server answered ${res.status}.`);
+    }
+    const blob = await res.blob();
+    const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "")?.[1] || "connection-report.pdf";
+    const a = node("a"); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    status.textContent = `Saved to your downloads as ${name}.`;
+  } catch (e) {
+    status.textContent = `No PDF: ${e.message}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Download PDF";
+  }
+}
+
+// ---------------------------------------------------------------- the report the PDF is printed from
+
+function renderReport() {
+  const s = state, rep = s.report, r = s.range;
+  $("reportRange").textContent = `${dmyy(r.from)} ${hms(r.from)} – ${dmyy(r.to)} ${hms(r.to)} (${spanText(r.to - r.from)}). Generated ${dmyy(rep.generated)} ${hms(rep.generated)}. Measured from this laptop, only while it was awake.`;
+  $("reportSetups").replaceChildren(...(s.periods.length ? s.periods.map(p => node("li", "",
+    `${p.label}: ${nf(p.problem)} of ${nf(p.counted)} minutes counted had problems (${pct(p.problem, p.counted, 0)}). ` +
+    `Router lost ${nf(p.routerLost)} of ${nf(p.routerSent)} pings, internet ${nf(p.netLost)} of ${nf(p.netSent)}. ` +
+    `Longest full outage: ${p.longest ? dur(p.longest) : "none"}.`)) : [node("li", "", "No monitored minutes in this range.")]));
+  renderRange();
+
+  const box = $("reportCommands"), { counts, definitions, total, failed } = s.commands;
+  const table = node("table");
+  box.replaceChildren(node("h2", "", "Commands run in the background"),
+    node("p", "muted", "What the monitors ran during this period, read back from their logs. Times are when each test round started, so the commands of one round show the same time. Counts cover whole minutes, so the edges of a period can add a few."),
+    table);
+  fillTable(table, ["Command", "What", "Script", "How often", "Run", "Failed", "Note"],
+    definitions.map(d => [commandText(d.command), d.label, d.script, d.every, nf(counts[d.kind].n), nf(counts[d.kind].failed), d.note]), [1, 2, 3, 6]);
+
+  box.append(node("h2", "", `Traceroutes (${nf(rep.traces.length)})`));
+  if (!rep.traces.length) box.append(node("p", "muted", "None in this period."));
+  for (const t of rep.traces) {
+    const d = node("div", "report-trace");
+    d.append(node("b", "", `${dmy(t.t)} ${hms(t.t)}: ${t.result}`), node("pre", "", t.output));
+    box.append(d);
+  }
+
+  const heading = rep.listedAll ? `Every command (${nf(rep.rows.length)})` : `Failed commands (${nf(rep.failedTotal)})`;
+  box.append(node("h2", "", heading));
+  if (!rep.listedAll && rep.rows.length < rep.failedTotal)
+    box.append(node("p", "muted", `This lists the first ${nf(rep.rows.length)}. The commands CSV has every one.`));
+  if (!rep.listedAll)
+    box.append(node("p", "muted", `About ${nf(Math.max(0, total - failed))} commands that succeeded aren't listed here. The commands CSV has every one.`));
+  if (!rep.rows.length) box.append(node("p", "muted", "None in this period."));
+  const rows = node("div", "print-rows");
+  for (const c of rep.rows)
+    rows.append(node("div", "", `${dmy(c.t)} ${hmsm(c.t)} ${c.ok ? "ok" : "FAILED"} ${c.cmd} → ${c.result}`));
+  box.append(rows);
+}
+
+// ---------------------------------------------------------------- wiring
+
+if (REPORT) {
+  state = REPORT;
+  renderReport();
+} else {
+  document.querySelectorAll("[data-window]").forEach(b => b.addEventListener("click", () => goTo({ window: b.dataset.window })));
+  for (const id of ["from", "to"]) $(id).addEventListener("input", () => { inputsDirty = true; });
+  $("rangeForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const from = new Date($("from").value).getTime(), to = new Date($("to").value).getTime();
+    const error = $("rangeError");
+    if (Number.isNaN(from) || Number.isNaN(to)) error.textContent = "Fill in both From and To.";
+    else if (from >= to) error.textContent = "From must be before To.";
+    else if (to - from < 10000) error.textContent = "Pick at least 10 seconds.";
+    else if (from > Date.now() - 10000) error.textContent = "From is in the future, there's nothing to show yet.";
+    else goTo({ from, to: Math.min(to, Date.now()) });
+  });
+  $("openCommands").addEventListener("click", () => toggleDrawer(!cmd.open));
+  $("closeDrawer").addEventListener("click", () => toggleDrawer(false));
+  $("onlyFailed").addEventListener("change", e => { cmd.failed = e.target.checked; loadCommands(true); });
+  $("cmds").addEventListener("scroll", e => {
+    const c = e.target;
+    if (cmd.next != null && c.scrollHeight - c.scrollTop - c.clientHeight < 300) loadCommands(false);
+  });
+  $("openExport").addEventListener("click", openExport);
+  $("exportPdf").addEventListener("click", downloadPdf);
+  $("exportClose").addEventListener("click", () => $("exportDialog").close());
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    if (drag) cancelDrag();
+    else if (cmd.open && !$("exportDialog").open) toggleDrawer(false);
+  });
+  let resized;
+  addEventListener("resize", () => { clearTimeout(resized); resized = setTimeout(() => state && render(true), 150); });
+  addEventListener("hashchange", () => applyView(parseHash()));
+  applyView(parseHash());
+  setInterval(() => {
+    if (document.hidden) return;
+    refresh();
+    // the open list follows a live range only while it is untouched, so it never moves under the reader
+    if (cmd.open && view.window && !cmd.loading && cmd.pages <= 1 && $("cmds").scrollTop === 0 && !$("cmds").querySelector("details[open]"))
+      loadCommands(true);
+  }, 2000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+}
+</script>
+</body>
+</html>
