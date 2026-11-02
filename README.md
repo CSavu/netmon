@@ -2,12 +2,28 @@
 
 A live view of the home connection, on this laptop only: http://127.0.0.1:8765/
 
+## Start
+
+From any folder, in PowerShell or Command Prompt:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\start.ps1           # starts anything not running: the monitors, the keep-awake helper, the dashboard
+powershell -ExecutionPolicy Bypass -File <project folder>\start.ps1
+```
+
+It starts whatever isn't already running (the monitors, the keep-awake helper, the dashboard) and prints the address.
+It's safe to run at any time, and it's needed again after the laptop restarts.
+
+## Other commands
+
+From this folder:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\stop.ps1            # stops the dashboard, the monitors keep logging
 powershell -ExecutionPolicy Bypass -File .\stop.ps1 -Monitors  # stops the monitors too
 python -m pytest test_server.py -q
 ```
+
+## How it works
 
 `server.py` (Python standard library only) reads the logs the monitors write in
 `<monitors folder>` (`NETMON_DIR`) as they grow, and `index.html` asks it for
