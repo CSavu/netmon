@@ -1,6 +1,6 @@
 # Connection monitor dashboard
 
-A live view of the home connection, on this laptop only: http://127.0.0.1:8765/
+A live view of the home connection, on this laptop only: http://127.0.0.1:3333/
 
 ## Start
 

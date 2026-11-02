@@ -1,6 +1,6 @@
 # Starts whatever is not running: the connection monitors, the keep-awake helper and the dashboard, each as a hidden
 # process that outlives this window. Then prints the dashboard's address. Safe to run at any time.
-param([string]$NetmonDir = '<monitors folder>', [int]$Port = 8765)
+param([string]$NetmonDir = '<monitors folder>', [int]$Port = 3333)
 $here = $PSScriptRoot
 Remove-Item (Join-Path $NetmonDir 'stop') -ErrorAction SilentlyContinue
 $running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ForEach-Object { $_.CommandLine }

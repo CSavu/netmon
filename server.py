@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 HERE = Path(__file__).parent
 NETMON_DIR = Path(os.environ.get("NETMON_DIR", r"<monitors folder>"))
-HOST, PORT = "127.0.0.1", int(os.environ.get("NETMON_DASHBOARD_PORT", "8765"))
+HOST, PORT = "127.0.0.1", int(os.environ.get("NETMON_DASHBOARD_PORT", "3333"))
 PRESETS = {"15m": 900, "1h": 3600, "6h": 21600, "24h": 86400, "all": None}
 STEPS = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400]
 MAX_BUCKETS = 300
