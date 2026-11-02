@@ -3,6 +3,7 @@
 Feeds a fixed copy of the logs through the row-by-row Track and compares it with netmon_data's whole-file functions.
 """
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -423,3 +424,15 @@ def test_editing_the_settings_counts_as_a_change_of_rules(switching):
     assert server.rules_mtime() != before
     settings.unlink()
     assert server.rules_mtime()[1] is None
+
+
+def test_no_monitor_overwrites_a_setting():
+    """PowerShell variable names ignore case: `$router = ...` in a monitor overwrites `$Router` from settings.ps1."""
+    monitors = Path(server.__file__).parent / "monitors"
+    assigned = re.compile(r"\$(\w+)\s*=[^=]")
+    settings = {name.lower() for name in assigned.findall((monitors / "settings.ps1").read_text(encoding="utf-8"))}
+    assert "router" in settings
+    for script in monitors.glob("*.ps1"):
+        if script.name != "settings.ps1":
+            clash = settings & {name.lower() for name in assigned.findall(script.read_text(encoding="utf-8"))}
+            assert not clash, (script.name, clash)

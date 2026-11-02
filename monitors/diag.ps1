@@ -32,17 +32,17 @@ function DnsMs($name) {
 
 while (-not (Test-Path (Join-Path $PSScriptRoot "stop"))) {
   $now = Get-Date
-  $router = PingMs $Router
+  $routerMs = PingMs $Router
   $t1 = TcpMs $Internet[0] 443
   $t2 = TcpMs $Internet[-1] 443
   # a fresh random name each time, so the answer cannot come from the PC's DNS cache
   $dns = DnsMs ("r{0}.example.com" -f (Get-Random))
   # Up while any physical adapter is connected (the Wi-Fi's own state is in wifi.csv)
   $link = if (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up') { 'Up' } else { 'Disconnected' }
-  "$($now.ToString('yyyy-MM-dd HH:mm:ss.fff')),$router,$t1,$t2,$dns,$link" | Out-File $log -Append -Encoding utf8
+  "$($now.ToString('yyyy-MM-dd HH:mm:ss.fff')),$routerMs,$t1,$t2,$dns,$link" | Out-File $log -Append -Encoding utf8
   if ($t1 -lt 0 -and $t2 -lt 0 -and ($now - $lastTrace).TotalSeconds -ge 60) {
     $lastTrace = $now
-    "===== $($now.ToString('yyyy-MM-dd HH:mm:ss')) internet down (router ping: $router ms) =====" | Out-File $traceLog -Append -Encoding utf8
+    "===== $($now.ToString('yyyy-MM-dd HH:mm:ss')) internet down (router ping: $routerMs ms) =====" | Out-File $traceLog -Append -Encoding utf8
     (tracert -d -h 6 -w 500 $Internet[-1]) | Out-File $traceLog -Append -Encoding utf8
   }
   Start-Sleep -Milliseconds 1000
