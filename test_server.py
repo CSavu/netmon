@@ -3,6 +3,7 @@
 Feeds a fixed copy of the logs through the row-by-row Track and compares it with netmon_data's whole-file functions.
 """
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -24,7 +25,7 @@ def replay(nd, rows):
 
 @pytest.mark.parametrize("wifi", [False, True])
 def test_real_log_matches_netmon_data(nd, wifi):
-    path = nd.HERE / "netmon.csv"
+    path = nd.DATA / "netmon.csv"
     if not path.exists():
         pytest.skip("no log on this machine")
     rows = nd.load_pings(wifi=wifi)
@@ -107,9 +108,10 @@ T0 = datetime(2026, 3, 1, 10, 0, 0)
 @pytest.fixture
 def store(tmp_path, monkeypatch, nd):
     """A store over small logs of its own: 30 minutes, some failures, two traceroutes."""
-    rules = (nd.HERE / "netmon_data.py").read_text(encoding="utf-8")
+    rules = Path(nd.__file__).read_text(encoding="utf-8")
     monkeypatch.setattr(server, "HERE", tmp_path)
-    monkeypatch.setattr(server, "NETMON_DIR", tmp_path)
+    monkeypatch.setattr(server, "MONITORS_DIR", tmp_path)
+    monkeypatch.setattr(server, "DATA_DIR", tmp_path)
     monkeypatch.setattr(server, "CHECKPOINT_EVERY", 50)
     (tmp_path / "netmon_data.py").write_text(rules, encoding="utf-8")
     pings = ["time,target,ok,ms"]

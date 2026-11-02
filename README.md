@@ -23,15 +23,22 @@ powershell -ExecutionPolicy Bypass -File .\stop.ps1 -Monitors  # stops the monit
 python -m pytest test_server.py -q
 ```
 
+## Where everything is
+
+- `data\`: every log and the evidence pack for Digi (`dovada_digi\`). It's git-ignored, so none of it reaches GitHub,
+  and it has no backup: copy it somewhere safe if you want to keep it. It grows by about 20-25 MB a day.
+- `monitors\`: the scripts that measure, the rules in `netmon_data.py`, and `make_digi_report.py`.
+- `server.py`, `index.html`: the dashboard.
+
 ## How it works
 
-`server.py` (Python standard library only) reads the logs the monitors write in
-`<monitors folder>` (`NETMON_DIR`) as they grow, and `index.html` asks it for
+`server.py` (Python standard library only) reads the logs the monitors write in `data\` as they grow, and
+`index.html` asks it for
 the current picture every 2 seconds. It listens on 127.0.0.1 only and never writes to those logs. It writes `server.log`
-and `commands.csv`, the record of the one command it runs itself (`ipconfig`, every 10 seconds, to see which link the
+and `data\commands.csv`, the record of the one command it runs itself (`ipconfig`, every 10 seconds, to see which link the
 laptop is on).
 
-What counts as a problem comes from that folder's `netmon_data.py`, the file the evidence pack for Digi is built from,
+What counts as a problem comes from `monitors\netmon_data.py`, the file the evidence pack for Digi is built from,
 so both show the same numbers. When the setup changes (Wi-Fi or cable, a router restart), mark it there; the dashboard
 sees the file change and reads everything again.
 

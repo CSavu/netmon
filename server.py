@@ -4,7 +4,7 @@ Reads netmon.csv, diag.csv and wifi.csv as they grow and serves one page on 127.
 The only command it runs itself is ipconfig (to see which link the laptop is on), which it records in commands.csv.
 PDF reports are printed by the Chrome or Edge already installed on this laptop.
 
-Every rule about what counts as a problem comes from the monitors' own netmon_data.py (loaded from NETMON_DIR and
+Every rule about what counts as a problem comes from the monitors' own netmon_data.py (loaded from monitors/ and
 loaded again when that file changes), so these numbers are the ones that go in the evidence pack.
 """
 import bisect
@@ -28,7 +28,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 HERE = Path(__file__).parent
-NETMON_DIR = Path(os.environ.get("NETMON_DIR", r"<monitors folder>"))
+MONITORS_DIR = HERE / "monitors"
+DATA_DIR = HERE / "data"
 HOST, PORT = "127.0.0.1", int(os.environ.get("NETMON_DASHBOARD_PORT", "3333"))
 PRESETS = {"15m": 900, "1h": 3600, "6h": 21600, "24h": 86400, "all": None}
 STEPS = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800, 86400]
@@ -68,7 +69,7 @@ log = logging.getLogger("netmon-dashboard")
 
 
 def load_rules():
-    spec = importlib.util.spec_from_file_location("netmon_data", NETMON_DIR / "netmon_data.py")
+    spec = importlib.util.spec_from_file_location("netmon_data", MONITORS_DIR / "netmon_data.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -242,8 +243,8 @@ class Store:
         self.lock = threading.RLock()
         self.ready = False
         self.files = {
-            "netmon": LogFile(NETMON_DIR / "netmon.csv"), "diag": LogFile(NETMON_DIR / "diag.csv"),
-            "wifi": LogFile(NETMON_DIR / "wifi.csv"), "ipconfig": LogFile(HERE / "commands.csv"),
+            "netmon": LogFile(DATA_DIR / "netmon.csv"), "diag": LogFile(DATA_DIR / "diag.csv"),
+            "wifi": LogFile(DATA_DIR / "wifi.csv"), "ipconfig": LogFile(DATA_DIR / "commands.csv"),
         }
         self.counts = {}  # minute -> Counter of commands run, "<kind>!" for the failed ones
         self.diag_min, self.signal_min = {}, {}
@@ -319,7 +320,7 @@ class Store:
             self.signal_min[key] = min(self.signal_min.get(key, sig), sig)
 
     def _read_traces(self):
-        path = NETMON_DIR / "diag_traceroute.txt"
+        path = DATA_DIR / "diag_traceroute.txt"
         try:
             mtime = path.stat().st_mtime
             if mtime == self._trace_mtime:
@@ -833,14 +834,14 @@ class App:
         self.link = wired_or_wifi_now()
         kind, address = self.link
         text = f"{kind}, {address}" if kind else "no address on the home network"
-        with open(HERE / "commands.csv", "a", encoding="utf-8") as f:
+        with open(DATA_DIR / "commands.csv", "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().isoformat(timespec='milliseconds')},{text}\n")
 
     def run_reader(self):
         last_link = 0
         while True:
             try:
-                rules = NETMON_DIR / "netmon_data.py"
+                rules = MONITORS_DIR / "netmon_data.py"
                 mtime = rules.stat().st_mtime
                 if mtime != self._rules_mtime:  # a setup or a restart was marked: read everything again
                     self._rules_mtime = mtime
@@ -1070,8 +1071,9 @@ def main():
     logging.basicConfig(filename=HERE / "server.log", level=logging.INFO, encoding="utf-8",
                         format="%(asctime)s %(levelname)s %(message)s")
     (HERE / "stop").unlink(missing_ok=True)
+    DATA_DIR.mkdir(exist_ok=True)
     threading.Thread(target=APP.run_reader, daemon=True).start()
-    log.info("serving on http://%s:%s, logs in %s", HOST, PORT, NETMON_DIR)
+    log.info("serving on http://%s:%s, logs in %s", HOST, PORT, DATA_DIR)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 
 
