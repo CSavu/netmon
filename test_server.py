@@ -255,3 +255,111 @@ def test_report_page_carries_the_range_and_its_commands(store, tmp_path):
     assert page.index("window.__REPORT__") < page.index("<script>x")
     assert '"listedAll": false' in page and "Tracing route" in page
     assert '"listedAll": true' in app.report_html({**q, "all": ["1"]})
+
+
+def at(minute, second=0):
+    return datetime(2026, 11, 3, 10, minute, second)
+
+
+def test_wifi_spans_follow_the_link_log(nd):
+    start = datetime(2026, 11, 2, 13, 0)
+    marked = [(start, None)]
+    assert nd.wifi_spans([], marked) == marked
+    # still on Wi-Fi when the log begins: one span, carried on from the hand-marked one
+    assert nd.wifi_spans([(at(0), "Wi-Fi"), (at(1), "Wi-Fi")], marked) == [(start, None)]
+    assert nd.wifi_spans([(at(0), "Wi-Fi"), (at(5), "Cable")], marked) == [(start, at(5))]
+    assert nd.wifi_spans([(at(0), "Cable"), (at(5), "Wi-Fi"), (at(9), "Cable"), (at(12), "Wi-Fi")], marked) == [
+        (start, at(0)), (at(5), at(9)), (at(12), None)]
+    # no reading of the other link: a dropped Wi-Fi or a VPN is still the same setup
+    assert nd.wifi_spans([(at(0), "Wi-Fi"), (at(1), "none"), (at(2), "other"), (at(3), "Wi-Fi")], marked) == [(start, None)]
+    assert nd.wifi_spans([(at(0), "Cable"), (at(1), "none"), (at(2), "Cable")], marked) == [(start, at(0))]
+    # hand-marked spans over before the log began stay as they are
+    assert nd.wifi_spans([(at(0), "Cable")], [(start, at(0) - timedelta(hours=1))]) == [(start, at(0) - timedelta(hours=1))]
+
+
+def test_read_link_skips_what_it_cannot_read(tmp_path, nd):
+    p = tmp_path / "link.csv"
+    p.write_bytes(b"\xef\xbb\xbftime,link,address\r\n2026-11-03 10:00:00.000,Wi-Fi,192.168.1.6\r\n"
+                  b"\x00\x00garbage\r\n2026-11-03 10:00:05.000,Cable,192.168.1.10\r\n2026-11-03 10:00:1")
+    assert nd.read_link(p) == [(at(0), "Wi-Fi"), (at(0, 5), "Cable")]
+    assert nd.read_link(tmp_path / "missing.csv") == []
+
+
+@pytest.fixture
+def switching(tmp_path, monkeypatch, nd):
+    """A laptop on Wi-Fi that plugs the cable in at 10:10, with pings lost around the switch."""
+    (tmp_path / "monitors").mkdir()
+    (tmp_path / "data").mkdir()
+    (tmp_path / "monitors" / "netmon_data.py").write_text(Path(nd.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(server, "HERE", tmp_path)
+    monkeypatch.setattr(server, "MONITORS_DIR", tmp_path / "monitors")
+    monkeypatch.setattr(server, "DATA_DIR", tmp_path / "data")
+    pings = ["time,target,ok,ms"]
+    for i in range(1200):
+        ts = at(0) + timedelta(seconds=i)
+        ok = not (at(9, 50) <= ts < at(10, 10))
+        pings.append(f"{ts.isoformat(sep=' ', timespec='milliseconds')},192.168.1.1,{ok},{1 if ok else 0}")
+    (tmp_path / "data" / "netmon.csv").write_text("\n".join(pings) + "\n", encoding="utf-8")
+    return tmp_path / "data" / "link.csv"
+
+
+def link_rows(minutes):
+    return "time,link,address\n" + "".join(
+        f"{at(m).isoformat(sep=' ', timespec='milliseconds')},{link},192.168.1.{10 if link == 'Cable' else 6}\n" for m, link in minutes)
+
+
+def test_plugging_in_the_cable_moves_the_rows_by_itself(switching):
+    switching.write_text(link_rows([(0, "Wi-Fi"), (5, "Wi-Fi"), (10, "Cable"), (15, "Cable")]), encoding="utf-8")
+    store = server.Store()
+    store.poll()
+    assert store.nd.WIFI_SPANS == [(datetime(2026, 11, 2, 13, 35, 34), at(10))]
+    assert not store.rules_outdated
+    assert max(store.wifi.mins) == at(9) and min(store.wired.mins) == at(10)
+    # the minutes either side of the switch end one stretch and start the other, so its lost pings count against neither
+    store.wifi.settle(); store.wired.settle()
+    assert store.wifi.mins[at(9)].lost["router"] == 10 and store.wifi.mins[at(9)].excluded
+    assert store.wired.mins[at(10)].lost["router"] == 10 and store.wired.mins[at(10)].excluded
+    labels = [m["label"] for m in server.markers_of(store.nd, at(0), at(20))]
+    assert labels == ["To cable"]
+    assert [p["label"] for p in server.periods_of(store, at(0), at(20))] == [
+        "Cable, straight to Digi, after restart 02.11 17:57", "Wi-Fi, Digi router, after restart 02.11 17:57"]
+
+
+def test_a_switch_while_running_asks_for_the_logs_to_be_read_again(switching):
+    switching.write_text(link_rows([(0, "Wi-Fi")]), encoding="utf-8")
+    store = server.Store()
+    store.poll()
+    assert not store.rules_outdated and store.nd.on_wifi(at(15))
+    with open(switching, "a", encoding="utf-8") as f:
+        f.write(link_rows([(1, "none"), (2, "other"), (3, "Wi-Fi")]).split("\n", 1)[1])
+    store.poll()
+    assert not store.rules_outdated  # a Wi-Fi drop or a VPN is no change of setup
+    with open(switching, "a", encoding="utf-8") as f:
+        f.write(link_rows([(10, "Cable")]).split("\n", 1)[1])
+    store.poll()
+    assert store.rules_outdated
+    fresh = server.Store()
+    fresh.poll()
+    assert not fresh.rules_outdated and not fresh.nd.on_wifi(at(15))
+
+
+def test_the_banner_reads_the_newest_link(switching):
+    store = server.Store()
+    assert server.link_of(store, at(0)) == ("Link unknown", None)
+    store.link_now = (at(0), "Cable", "192.168.1.10")
+    assert server.link_of(store, at(0, 5)) == ("Cable", "192.168.1.10")
+    assert server.link_of(store, at(1)) == ("Link unknown", None)  # link.ps1 stopped
+    store.link_now = (at(0), "none", "")
+    assert server.link_of(store, at(0, 5)) == (None, None)
+    store.link_now = (at(0), "other", "10.0.0.5")
+    assert server.link_of(store, at(0, 5)) == (None, None)
+
+
+def test_link_checks_are_listed_as_commands(switching):
+    switching.write_text(link_rows([(0, "Wi-Fi"), (1, "none"), (2, "Cable")]), encoding="utf-8")
+    store = server.Store()
+    store.poll()
+    rows = server.commands_between(store, at(0), at(3), ["link"])
+    assert [(c["result"], c["ok"]) for c in rows] == [
+        ("Wi-Fi, 192.168.1.6", True), ("none, 192.168.1.6", False), ("Cable, 192.168.1.10", True)]
+    assert server.command_counts(store, at(0), at(3))["link"] == {"n": 3, "failed": 1}

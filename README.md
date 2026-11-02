@@ -4,18 +4,16 @@ A live view of the home connection, on this laptop only: http://127.0.0.1:3333/
 
 ## Start
 
-From any folder, in PowerShell or Command Prompt:
+From this folder, in PowerShell or Command Prompt:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File <project folder>\start.ps1
+powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
 It starts whatever isn't already running (the monitors, the keep-awake helper, the dashboard) and prints the address.
 It's safe to run at any time, and it's needed again after the laptop restarts.
 
 ## Other commands
-
-From this folder:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\stop.ps1            # stops the dashboard, the monitors keep logging
@@ -34,13 +32,15 @@ python -m pytest test_server.py -q
 
 `server.py` (Python standard library only) reads the logs the monitors write in `data\` as they grow, and
 `index.html` asks it for
-the current picture every 2 seconds. It listens on 127.0.0.1 only and never writes to those logs. It writes `server.log`
-and `data\commands.csv`, the record of the one command it runs itself (`ipconfig`, every 10 seconds, to see which link the
-laptop is on).
+the current picture every 2 seconds. It listens on 127.0.0.1 only and never writes to those logs. It writes only
+`server.log`.
 
 What counts as a problem comes from `monitors\netmon_data.py`, the file the evidence pack for Digi is built from,
-so both show the same numbers. When the setup changes (Wi-Fi or cable, a router restart), mark it there; the dashboard
-sees the file change and reads everything again.
+so both show the same numbers.
+
+**Cable and Wi-Fi are recognized by themselves:** `monitors\link.ps1` logs every 5 seconds which link reaches the router,
+and the dashboard reads everything again when it changes. Only a router restart, or putting a box like the Asus back
+between the laptop and the router, still needs marking in `netmon_data.py`: nothing on the laptop can tell either one.
 
 ## Picking a period
 
@@ -51,8 +51,7 @@ the tiles above them always show right now.
 ## The commands drawer
 
 **Commands** lists what the monitors ran in the period, newest first, rebuilt from their logs: a monitor's log row holds
-the result of each command it ran, so the list needs no second log and goes back to the first day. `ipconfig` is
-recorded only since this feature was added. Commands run by hand or in a chat aren't listed.
+the result of each command it ran, so the list needs no second log and goes back to the first day. Commands run by hand or in a chat aren't listed.
 
 ## Export
 

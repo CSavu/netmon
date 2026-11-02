@@ -1,7 +1,7 @@
 """Live dashboard over the connection monitors' logs. Python standard library only.
 
 Reads netmon.csv, diag.csv and wifi.csv as they grow and serves one page on 127.0.0.1. It never writes to those logs.
-The only command it runs itself is ipconfig (to see which link the laptop is on), which it records in commands.csv.
+link.csv says which link the laptop is on; a change of link means reading the logs again, as it moves rows between setups.
 PDF reports are printed by the Chrome or Edge already installed on this laptop.
 
 Every rule about what counts as a problem comes from the monitors' own netmon_data.py (loaded from monitors/ and
@@ -62,7 +62,9 @@ KINDS = {
     "tracert": {"label": "Traceroute", "command": "tracert -d -h 6 -w 500 8.8.8.8", "script": "diag.ps1",
                 "every": "during outages, at most once a minute", "note": "Runs when both HTTPS tests fail, so every one counts as failed. Since 19 October."},
     "ipconfig": {"label": "ipconfig", "command": "ipconfig", "script": "server.py (this dashboard)",
-                 "every": "every 10 s", "note": "Finds which link the laptop is on. Recorded since 2 November."},
+                 "every": "every 10 s", "note": "Found which link the laptop was on, for a few hours on 2 November, until link.ps1 took over."},
+    "link": {"label": "Link check", "command": "Find-NetRoute -RemoteIPAddress 192.168.1.1", "script": "link.ps1",
+             "every": "every 5 s", "note": "Which link reaches the router, read with Get-NetAdapter. Since 2 November. Failed here means no route to the router."},
 }
 
 log = logging.getLogger("netmon-dashboard")
@@ -215,6 +217,14 @@ def parse_radio(line):
         return None
 
 
+def parse_link(line):
+    c = line.split(",")
+    try:
+        return datetime.fromisoformat(c[0]), c[1], c[2]
+    except (IndexError, ValueError):
+        return None
+
+
 def parse_ipconfig(line):
     c = line.split(",", 1)
     try:
@@ -245,12 +255,15 @@ class Store:
         self.files = {
             "netmon": LogFile(DATA_DIR / "netmon.csv"), "diag": LogFile(DATA_DIR / "diag.csv"),
             "wifi": LogFile(DATA_DIR / "wifi.csv"), "ipconfig": LogFile(DATA_DIR / "commands.csv"),
+            "link": LogFile(DATA_DIR / "link.csv"),
         }
         self.counts = {}  # minute -> Counter of commands run, "<kind>!" for the failed ones
         self.diag_min, self.signal_min = {}, {}
         self.traces, self._trace_mtime = [], None
         self.first = None
         self._day, self._prev = self.nd.FIRST_DAY, None
+        self.link_now = None  # (time, link, address) of the newest reading
+        self.rules_outdated = False  # a reading the setup periods don't know yet
 
     def _count(self, ts, kind, failed=False):
         c = self.counts.setdefault(minute_of(ts), Counter())
@@ -272,6 +285,8 @@ class Store:
                 if row:
                     self.files["ipconfig"].mark(row[0], offset)
                     self._count(row[0], "ipconfig")
+            for offset, line in new["link"]:
+                self._link(offset, line)
             self._read_traces()
             if any(new.values()):
                 self._trim()
@@ -319,6 +334,17 @@ class Store:
             key = minute_of(ts)
             self.signal_min[key] = min(self.signal_min.get(key, sig), sig)
 
+    def _link(self, offset, line):
+        row = parse_link(line)
+        if row is None:
+            return
+        ts, link, _address = row
+        self.files["link"].mark(ts, offset)
+        self._count(ts, "link", link == "none")
+        self.link_now = row
+        if link in ("Cable", "Wi-Fi") and self.nd.on_wifi(ts) != (link == "Wi-Fi"):
+            self.rules_outdated = True
+
     def _read_traces(self):
         path = DATA_DIR / "diag_traceroute.txt"
         try:
@@ -353,7 +379,7 @@ class Store:
             if not f.times:
                 return
             offset, day, prev = f.marks[max(bisect.bisect_right(f.times, a) - 1, 0)]
-        parse = {"diag": parse_diag, "wifi": parse_radio, "ipconfig": parse_ipconfig}.get(name)
+        parse = {"diag": parse_diag, "wifi": parse_radio, "ipconfig": parse_ipconfig, "link": parse_link}.get(name)
         day = day or self.nd.FIRST_DAY
         try:
             with open(f.path, "rb") as fh:
@@ -394,23 +420,12 @@ def median(values):
     return statistics.median(values) if values else None
 
 
-def wired_or_wifi_now():
-    """(kind, address) from ipconfig: which link holds this laptop's address on the home network."""
-    try:
-        out = subprocess.run(["ipconfig"], capture_output=True, text=True, timeout=10,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None, None
-    section = None
-    for line in out.splitlines():
-        head = re.match(r"^\S.*adapter (.+):\s*$", line)
-        if head:
-            section = head.group(1)
-        else:
-            m = re.search(r"IPv4 Address[ .]*: *(192\.168\.1\.\d+)", line)
-            if m and section:
-                return ("Cable" if section == "Ethernet" else "Wi-Fi"), m.group(1)
-    return None, None
+def link_of(store, now):
+    """(kind, address) for the banner, from the newest reading of link.ps1."""
+    if store.link_now is None or (now - store.link_now[0]).total_seconds() > STALE_SECONDS:
+        return "Link unknown", None
+    _ts, link, address = store.link_now
+    return (link, address) if link in ("Cable", "Wi-Fi") else (None, None)
 
 
 def status_of(store, now, nd):
@@ -677,13 +692,19 @@ def _wifi_rows(row):
     return [{"t": ms_of(ts), "kind": "wifi", "cmd": KINDS["wifi"]["command"], "result": text, "ok": state == "connected"}]
 
 
+def _link_rows(row):
+    ts, link, address = row
+    text = f"{link}, {address}" if address else "no route to the router"
+    return [{"t": ms_of(ts), "kind": "link", "cmd": KINDS["link"]["command"], "result": text, "ok": link != "none"}]
+
+
 def _ipconfig_rows(row):
     return [{"t": ms_of(row[0]), "kind": "ipconfig", "cmd": "ipconfig", "result": row[1], "ok": True}]
 
 
-EXPAND = {"netmon": _ping_rows, "diag": _diag_rows, "wifi": _wifi_rows, "ipconfig": _ipconfig_rows}
+EXPAND = {"netmon": _ping_rows, "diag": _diag_rows, "wifi": _wifi_rows, "ipconfig": _ipconfig_rows, "link": _link_rows}
 LOG_OF_KIND = {"ping": "netmon", "diag_ping": "diag", "tcp": "diag", "dns": "diag", "adapter": "diag",
-               "wifi": "wifi", "ipconfig": "ipconfig"}
+               "wifi": "wifi", "ipconfig": "ipconfig", "link": "link"}
 
 
 def command_counts(store, start, end):
@@ -818,7 +839,6 @@ def parse_range(query, store, now):
 class App:
     def __init__(self):
         self.store = None
-        self.link = (None, None)
         self._ranges = {}
         self._rules_mtime = None
         self.lock = threading.Lock()
@@ -830,20 +850,13 @@ class App:
         store.ready = True
         log.info("logs loaded in %.1f s", time.time() - started)
 
-    def _run_ipconfig(self):
-        self.link = wired_or_wifi_now()
-        kind, address = self.link
-        text = f"{kind}, {address}" if kind else "no address on the home network"
-        with open(DATA_DIR / "commands.csv", "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().isoformat(timespec='milliseconds')},{text}\n")
-
     def run_reader(self):
-        last_link = 0
         while True:
             try:
                 rules = MONITORS_DIR / "netmon_data.py"
                 mtime = rules.stat().st_mtime
-                if mtime != self._rules_mtime:  # a setup or a restart was marked: read everything again
+                # a setup or a restart was marked, or the link changed: read everything again
+                if mtime != self._rules_mtime or self.store.rules_outdated:
                     self._rules_mtime = mtime
                     store = Store()
                     self.build(store)
@@ -851,9 +864,6 @@ class App:
                     self._ranges = {}
                 else:
                     self.store.poll()
-                if time.time() - last_link > 10:
-                    self._run_ipconfig()
-                    last_link = time.time()
             except Exception:
                 log.exception("reading the logs failed")
             if (HERE / "stop").exists():
@@ -882,7 +892,7 @@ class App:
         nd = store.nd
         with store.lock:
             radio = store.radio[-1] if store.radio else None
-            kind, address = self.link
+            kind, address = link_of(store, now)
             connection = {"kind": kind, "address": address, "signal": None, "rssi": None, "channel": None,
                           "rx": None, "tx": None, "state": None}
             if radio and kind != "Cable":

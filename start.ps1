@@ -6,7 +6,7 @@ $monitors = Join-Path $here 'monitors'
 New-Item -ItemType Directory -Force -Path (Join-Path $here 'data') | Out-Null
 Remove-Item (Join-Path $monitors 'stop') -ErrorAction SilentlyContinue
 $running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ForEach-Object { $_.CommandLine }
-foreach ($s in 'netmon.ps1', 'diag.ps1', 'wifi.ps1', 'keepawake.ps1') {
+foreach ($s in 'netmon.ps1', 'diag.ps1', 'wifi.ps1', 'link.ps1', 'keepawake.ps1') {
     if (-not ($running | Where-Object { $_ -match [regex]::Escape("monitors\$s") })) {
         Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$monitors\$s`""
         "started $s"

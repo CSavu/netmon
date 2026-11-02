@@ -658,7 +658,7 @@ function renderLive() {
   document.title = `${icons[s.status.level]} ${s.status.title}`;
   $("updated").textContent = `Updated ${hms(s.now)}`;
   const c = s.connection;
-  $("link").textContent = c.kind ? `${c.kind}, ${c.address}` : "Not on the home network";
+  $("link").textContent = c.kind ? (c.address ? `${c.kind}, ${c.address}` : c.kind) : "Not on the home network";
 
   const t = s.tiles;
   const wifiLabel = c.kind === "Cable" ? "No Wi-Fi: on the cable" : c.channel ? `Channel ${c.channel}, ${c.rx ?? "—"}/${c.tx ?? "—"} Mbps` : "No Wi-Fi reading";

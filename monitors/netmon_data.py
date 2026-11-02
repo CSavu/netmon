@@ -14,6 +14,8 @@ lost router ping can no longer be blamed on anything between the two.
 
 In WIFI_SPANS the PC reached the router over Wi-Fi, whose own losses say nothing about the router or the line: those
 rows are left out by default and read only with wifi=True. An open span (None) runs until the setup changes again.
+link.ps1 logs the link every 5 s, so the spans follow data/link.csv by themselves; HAND_MARKED_WIFI is the time before
+that log began. It can tell cable from Wi-Fi, not what the cable plugs into: DIRECT_SINCE stays marked by hand.
 
 ROUTER_RESTARTS are reboots done on purpose: those minutes count as the household's doing, never as a drop.
 """
@@ -29,7 +31,7 @@ FIRST_DAY = date(2026, 10, 17)
 SESSION_GAP = timedelta(seconds=60)
 SLOW_MS = 150
 DIRECT_SINCE = datetime(2026, 11, 2)
-WIFI_SPANS = [(datetime(2026, 11, 2, 13, 35, 34), None)]
+HAND_MARKED_WIFI = [(datetime(2026, 11, 2, 13, 35, 34), None)]
 ROUTER_RESTARTS = [(datetime(2026, 11, 2, 17, 52), datetime(2026, 11, 2, 17, 57))]
 
 
@@ -41,6 +43,45 @@ def _ts(text, day, prev):
         day += timedelta(days=1)
         t += timedelta(days=1)
     return t, day
+
+
+def read_link(path=DATA / "link.csv"):
+    """[(time, link)] from link.ps1's log. A line cut short, or NUL bytes from a killed monitor, are skipped."""
+    try:
+        text = path.read_bytes().replace(b"\x00", b"").decode("utf-8", "replace")
+    except OSError:
+        return []
+    rows = []
+    for line in text.splitlines():
+        c = line.lstrip("\ufeff").split(",")
+        try:
+            if len(c) == 3:
+                rows.append((datetime.fromisoformat(c[0]), c[1]))
+        except ValueError:
+            pass  # the header
+    return rows
+
+
+def wifi_spans(rows, marked=HAND_MARKED_WIFI):
+    """The hand-marked spans up to the log's first row, then the log's. Only a reading of Cable or Wi-Fi changes the
+    setup: Wi-Fi dropping for a moment ("none") or a VPN ("other") is still the setup it was."""
+    if not rows:
+        return list(marked)
+    first = rows[0][0]
+    spans = [(a, b) for a, b in marked if b is not None and b <= first]
+    start = next((a for a, b in marked if a <= first and (b is None or first < b)), None)
+    for ts, link in rows:
+        if link == "Wi-Fi" and start is None:
+            start = ts
+        elif link == "Cable" and start is not None:
+            spans.append((start, ts))
+            start = None
+    if start is not None:
+        spans.append((start, None))
+    return spans
+
+
+WIFI_SPANS = wifi_spans(read_link())
 
 
 def on_wifi(ts):
